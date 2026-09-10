@@ -82,3 +82,13 @@ CREATE TABLE IF NOT EXISTS failures (
     reason    TEXT,
     failed_at TEXT
 );
+
+-- Artists to leave out of everything, honoured by both halves. A filter rather
+-- than a delete, so it is reversible and needs no rebuild; see blocklist.purge
+-- for the destructive version.
+CREATE TABLE IF NOT EXISTS blocked_artists (
+    artist_id   INTEGER PRIMARY KEY,
+    name        TEXT,
+    reason      TEXT,
+    blocked_at  TEXT NOT NULL
+);
