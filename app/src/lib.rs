@@ -5,6 +5,7 @@
 
 pub mod db;
 pub mod paths;
+pub mod qobuz;
 pub mod space;
 pub mod text;
 
