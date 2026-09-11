@@ -1,0 +1,48 @@
+[package]
+name = "qsuggest-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "qsuggest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qsuggest-app"
+path = "src/main.rs"
+
+# Parity harness: prints the same queries as the Python CLI so the two
+# implementations can be diffed against each other.
+[[bin]]
+name = "parity"
+path = "src/bin/parity.rs"
+
+# Headless crawler, the Rust replacement for `uv run qsuggest crawl`.
+[[bin]]
+name = "crawl"
+path = "src/bin/crawl.rs"
+
+[dependencies]
+anyhow = "1"
+bytemuck = "1"
+md-5 = "0.11.0"
+memmap2 = "0.9"
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "query"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time", "process", "io-util"] }
+
+[dependencies.dioxus]
+version = "0.7"
+features = ["desktop"]
+
+# Only for killing a stage's whole process group; see ui/pipeline.rs.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
