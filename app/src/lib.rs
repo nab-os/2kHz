@@ -4,6 +4,7 @@
 //! `space.json`, and answers navigation queries in process.
 
 pub mod db;
+pub mod map;
 pub mod paths;
 pub mod qobuz;
 pub mod space;
