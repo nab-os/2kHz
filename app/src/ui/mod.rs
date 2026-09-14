@@ -5,8 +5,10 @@
 //! This file holds the shared Qobuz client, the database path, and the
 //! contexts every panel reads.
 
+pub mod library;
 pub mod player;
 
+pub use library::{open_initial, Library, LibraryPanel};
 pub use player::{use_transport, Player, PlayerBar};
 
 use dioxus::prelude::*;
