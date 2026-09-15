@@ -3,6 +3,7 @@
 //! Reads what the Python pipeline produces, `qsuggest.db`, `space.bin`,
 //! `space.json`, and answers navigation queries in process.
 
+pub mod crawl;
 pub mod db;
 pub mod map;
 pub mod paths;
