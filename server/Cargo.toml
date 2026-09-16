@@ -1,0 +1,31 @@
+[package]
+name = "qsuggest-server"
+version = "0.1.0"
+edition = "2021"
+
+# Deliberately not a workspace member with `app`: a shared target directory
+# would force a from-scratch rebuild of ort, rusqlite-bundled and dioxus.
+
+[[bin]]
+name = "qsuggest-server"
+path = "src/main.rs"
+
+[dependencies]
+# Package is `qsuggest-app`; its library target is named `qsuggest`.
+# The server is the local half, so it wants `local` and not `desktop`: there is
+# no window here, so no dioxus, wry or GTK.
+qsuggest-app = { path = "../app", default-features = false, features = ["local"] }
+
+anyhow = "1"
+axum = "0.8"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rand = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }
+tokio-stream = "0.1"
+
+[profile.release]
+opt-level = 3
