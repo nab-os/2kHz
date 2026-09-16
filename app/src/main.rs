@@ -13,8 +13,8 @@ use qsuggest::{default_data_dir, default_db_path, engine, map};
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::{
-    Blocklist, GeneratePanel, Generator, Library, LibraryPanel, LocalIds, Player, PlayerBar,
-    Selection,
+    Blocklist, Crawler, GeneratePanel, Generator, Library, LibraryPanel, LocalIds, Pipeline,
+    PipelineView, Player, PlayerBar, Selection,
 };
 
 fn main() {
@@ -23,7 +23,8 @@ fn main() {
 
     match qsuggest::init_engine(&data_dir, &db_path) {
         Ok(()) => {
-            // The same database the space was loaded from.
+            // Same database the space was loaded from, so queued crawl work
+            // lands where the pipeline will look for it.
             ui::set_db_path(db_path.clone());
         }
         Err(err) => {
@@ -42,6 +43,9 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    // A pipeline stage must not outlive the window it was started from.
+    ui::pipeline::install_exit_guard();
 
     // Three columns plus a map need room; the default window is too small to
     // show them without the panels collapsing.
@@ -77,6 +81,46 @@ fn App() -> Element {
     let library = use_context_provider(Library::new);
 
     let generator = use_context_provider(Generator::new);
+    use_context_provider(Crawler::new);
+    let pipeline = use_context_provider(Pipeline::new);
+
+    // Explore is the map and space tools; Pipeline builds the corpus. One
+    // window because they share the player and the database.
+    let mut explore = use_signal(|| true);
+
+    // A rebuilt space on disk means the loaded one is stale. Reload it and
+    // redraw rather than making the user restart the app.
+    use_effect(move || {
+        let generation = *pipeline.generation.read();
+
+        if generation > 0 {
+            match qsuggest::reload_engine(&default_data_dir(), &default_db_path()) {
+                Ok(()) => {
+                    selected.set(None);
+                    generator.clear();
+                    document::eval("window.qsuggestReloadPoints && window.qsuggestReloadPoints();");
+                }
+                Err(err) => eprintln!("could not reload the rebuilt space: {err:#}"),
+            }
+        }
+
+        // Only the shell can see the engine, and "how many points are drawn"
+        // is a question about the loaded space, not about the database.
+        let (in_space, on_map) = {
+            let guard = engine().lock().unwrap();
+            let catalog = &guard.navigator.catalog;
+            (
+                catalog.visible().count() as i64,
+                catalog
+                    .visible()
+                    .filter(|&i| catalog.get(i).x.is_some())
+                    .count() as i64,
+            )
+        };
+        let mut pipeline = pipeline;
+        pipeline.space_counts.set((in_space, on_map));
+        pipeline.refresh();
+    });
 
     // Blocking writes to the database, refreshes the engine's filter, and
     // redraws the map, all three, or the halves disagree about what exists.
@@ -117,6 +161,7 @@ fn App() -> Element {
     // offering to locate itself on the map.
     let local_ids = use_memo(move || {
         blocked.read();
+        pipeline.generation.read();
         Rc::new(engine().lock().unwrap().navigator.catalog.id_set())
     });
     use_context_provider(|| LocalIds(local_ids));
@@ -214,6 +259,8 @@ fn App() -> Element {
             .collect()
     };
 
+
+
     let selected_label = selected()
         .and_then(|id| {
             let guard = engine().lock().unwrap();
@@ -236,11 +283,25 @@ fn App() -> Element {
                 if hidden_tracks > 0 {
                     span { class: "muted", "({hidden_tracks} hidden)" }
                 }
+                nav { class: "views",
+                    button {
+                        class: if explore() { "tab active" } else { "tab" },
+                        onclick: move |_| explore.set(true),
+                        "explore"
+                    }
+                    button {
+                        class: if explore() { "tab" } else { "tab active" },
+                        onclick: move |_| explore.set(false),
+                        "pipeline"
+                    }
+                }
                 span { class: "spacer" }
                 span { class: "muted", "{selected_label}" }
             }
 
-            div { class: "body",
+            // Hidden, not unmounted: map.js holds a reference to the canvas,
+            // and remounting it would leave the map drawing into a dead node.
+            div { class: if explore() { "body" } else { "body hidden" },
                 LibraryPanel {}
 
                 div { class: "map-wrap",
@@ -308,6 +369,10 @@ fn App() -> Element {
                         }
                     }
                 }
+            }
+
+            if !explore() {
+                PipelineView {}
             }
 
             PlayerBar {}
