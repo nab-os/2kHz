@@ -390,3 +390,21 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
 }
 .field > .muted:first-child { min-width: 44px; }
 .field .ellipsis { flex: 1; min-width: 0; font-size: 12px; }
+
+/* ---------------------------------------------------------------- setup
+   Shown until a device has a server to talk to. Sized for a phone first:
+   this is the one screen that is guaranteed to be read on one. */
+.setup {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.setup h1 { margin: 0 0 0.5rem; font-size: 1.4rem; }
+.setup label { font-size: 0.8rem; opacity: 0.7; margin-top: 0.5rem; }
+.setup .search { width: 100%; box-sizing: border-box; padding: 0.7rem; font-size: 1rem; }
+.setup .actions { margin-top: 1rem; }
+.setup .primary { padding: 0.7rem 1.4rem; font-size: 1rem; }
+.setup pre.log { white-space: pre-wrap; margin-top: 1rem; max-height: 16rem; }

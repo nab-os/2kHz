@@ -6,43 +6,106 @@ edition = "2021"
 [lib]
 name = "qsuggest"
 path = "src/lib.rs"
+# `lib` for the server and helper binaries; `cdylib` so the APK can load it
+# and call `start_app` through JNI.
+crate-type = ["lib", "cdylib"]
 
+# Also the Android entry point: dioxus' `start_app` trampoline dlsym's `main`,
+# so the APK's shared library is this target built with `--features mobile`.
 [[bin]]
 name = "qsuggest-app"
 path = "src/main.rs"
+required-features = ["gui"]
 
 # Parity harness: prints the same queries as the Python CLI so the two
 # implementations can be diffed against each other.
 [[bin]]
 name = "parity"
 path = "src/bin/parity.rs"
+required-features = ["local"]
 
 # Headless crawler, the Rust replacement for `uv run qsuggest crawl`.
 [[bin]]
 name = "crawl"
 path = "src/bin/crawl.rs"
+required-features = ["local"]
+
+# ---------------------------------------------------------------- features
+#
+#   local:   Qobuz client, SQLite, pipeline subprocesses, CLAP text tower.
+#   desktop: local, plus a dioxus window.
+#   mobile:  a dioxus window and nothing else; a phone asks the server to
+#             embed rather than carrying a 479MB model.
+[features]
+default = ["desktop"]
+local = ["dep:ort", "dep:tokenizers", "tokio/process", "tokio/io-util"]
+# Anything with a screen: brings in `app` and `ui`, which desktop and mobile
+# share in full.
+gui = ["dep:dioxus"]
+desktop = ["local", "gui", "dioxus/desktop"]
+mobile = ["gui", "dioxus/mobile"]
+# Exploratory; see the wasm notes in README.
+web = ["gui", "dioxus/web"]
 
 [dependencies]
 anyhow = "1"
 bytemuck = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 md-5 = "0.11.0"
 memmap2 = "0.9"
-ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "query"] }
+# `stream` is what lets the remote backend hold the pipeline log open as SSE
+# rather than polling it.
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "query", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
-tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time", "process", "io-util"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time"] }
+
+# `local` only. ort does ship an aarch64-android build; nothing on a phone
+# would call it.
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"], optional = true }
+tokenizers = { version = "0.23.2", default-features = false, features = ["onig"], optional = true }
 
 [dependencies.dioxus]
 version = "0.7"
-features = ["desktop"]
+optional = true
+# Defaults carry rsx!, signals, hooks and html, and no platform, that comes
+# from the desktop/mobile features above.
 
-# Only for killing a stage's whole process group; see ui/pipeline.rs.
+# Only for killing a stage's whole process group; see stages.rs.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The JNI entry point and logging; see src/mobile.rs.
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"
+log = "0.4"
 
 [profile.release]
 opt-level = 3
 lto = true
+
+# ------------------------------------------------------- mobile scaffolding
+#
+# Left over from `cargo mobile init` and unused; see Dioxus.toml.
+# WRY_ANDROID_LIBRARY must equal [lib] name, the .so the activity loads.
+
+[package.metadata.cargo-android]
+app-activity-name = "fr.glargh.qsuggest.MainActivity"
+app-dependencies = [
+    "androidx.webkit:webkit:1.6.1",
+    "androidx.appcompat:appcompat:1.7.1",
+    "com.google.android.material:material:1.12.0",
+    "androidx.activity:activity-ktx:1.10.1",
+    "androidx.lifecycle:lifecycle-process:2.10.0",
+]
+project-dependencies = []
+app-plugins = []
+app-permissions = [ "android.permission.INTERNET" ]
+app-theme-parent = "Theme.MaterialComponents.DayNight.DarkActionBar"
+vulkan-validation = false
+
+[package.metadata.cargo-android.env-vars]
+WRY_ANDROID_PACKAGE = "fr.glargh.qsuggest"
+WRY_ANDROID_LIBRARY = "qsuggest"
+WRY_ANDROID_KOTLIN_FILES_OUT_DIR = "<android-project-dir>/app/src/main/kotlin/fr/glargh/qsuggest"

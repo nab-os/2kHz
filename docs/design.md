@@ -144,6 +144,39 @@ drive. It has already caught one real bug, the two sides were building
 waypoints from differently scaled vectors, which silently produced different
 drift paths.
 
+## Not yet verified
+
+Whether Qobuz's signed file URLs are IP-bound. `track/getFileUrl` returns an
+opaque CDN URL and whether they tie it to the requesting address is their
+policy, not ours. If they do, playback has to proxy through the server and the
+bandwidth story changes. Ten-minute test: mint a URL on the server, then
+`curl -r 0-1000` it from a host on another network.
+
+## Android: the open questions
+
+- **The layout is still desktop-shaped.** Three columns and a canvas map do not
+  belong on a 1080px-wide screen; it is usable but not designed. The panels are
+  ordinary flexbox, so this is CSS work, not architecture.
+- **Background playback.** Audio is an `<audio>` element in a WebView, which
+  Android throttles when backgrounded, with no MediaSession, lockscreen controls
+  or audio focus. For a music app that is the product, not a rough edge, it
+  wants a native `MediaSessionService` fed the signed URL, with Rust keeping
+  only the queue.
+
+## Web
+
+Not working, and honestly characterised rather than promised.
+
+`cargo check --target wasm32-unknown-unknown --features web` gets further than
+expected: **every dependency compiles, including rusqlite and memmap2.**
+
+Compiling is not the hard part. The hard part is that both of those crates
+compile and then cannot *work*: there is no filesystem to `std::fs::read` a
+`catalog.db` from and nothing to `mmap`. A real web client needs the space
+fetched into memory rather than mapped, and the catalogue served as a flat
+buffer instead of SQLite, which would also simplify Android. That is a week-ish
+of work on the data layer, not an afternoon of cfg attributes.
+
 ## Licensing
 
 Essentia's pretrained weights are CC BY-NC-SA 4.0, fine personally, blocking

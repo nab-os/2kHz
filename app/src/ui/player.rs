@@ -3,10 +3,9 @@
 //! The `<audio>` element owns playback; see `assets/player.js`. Rust hands it
 //! a URL and gets track-boundary events back.
 
-use super::{client, db_path};
 use dioxus::prelude::*;
-use qsuggest::db;
-use qsuggest::qobuz::{RemoteTrack, FORMAT_FLAC_CD, FORMAT_FLAC_HIRES, FORMAT_MP3_320};
+use crate::backend::backend;
+use crate::qobuz::{RemoteTrack, FORMAT_FLAC_CD, FORMAT_FLAC_HIRES, FORMAT_MP3_320};
 
 #[derive(Clone, Copy)]
 pub struct Player {
@@ -36,8 +35,20 @@ pub fn quality_label(format_id: u32) -> &'static str {
 }
 
 async fn stream_url(track_id: i64, format_id: u32) -> anyhow::Result<String> {
-    let mut guard = client()?.lock().await;
-    guard.file_url(track_id, format_id).await
+    backend().file_url(track_id, format_id).await
+}
+
+/// Whether a queued track belongs to a hidden artist. Asked of the loaded
+/// space, not the database: a remote client has none, and the engine's copy is
+/// the one kept in step.
+fn is_hidden(artist_id: i64) -> bool {
+    crate::engine()
+        .lock()
+        .unwrap()
+        .navigator
+        .catalog
+        .blocked_artists
+        .contains(&artist_id)
 }
 
 /// Fire a transport command at the audio element. Guarded because the first
@@ -81,10 +92,7 @@ pub async fn play_at(mut player: Player, index: usize) {
     }
 
     // A queue built before a block still holds the hidden artist's tracks.
-    if track
-        .artist_id
-        .is_some_and(|id| db::blocked_artist_ids(db_path()).is_ok_and(|b| b.contains(&id)))
-    {
+    if track.artist_id.is_some_and(is_hidden) {
         player.status.set(Some(format!("skipped {}", track.artist)));
         step(player, 1);
         return;

@@ -8,11 +8,11 @@
 
 use anyhow::{bail, Context, Result};
 use md5::{Digest, Md5};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const API_BASE: &str = "https://www.qobuz.com/api.json/0.2";
@@ -132,7 +132,7 @@ impl Credentials {
 // Flattened views of the Qobuz JSON. No vector and no row index: a remote item
 // links to the space by track id or not at all.
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RemoteTrack {
     pub id: i64,
     pub title: String,
@@ -147,7 +147,7 @@ pub struct RemoteTrack {
     pub hires: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RemoteAlbum {
     pub id: String,
     pub title: String,
@@ -158,14 +158,14 @@ pub struct RemoteAlbum {
     pub tracks_count: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RemoteArtist {
     pub id: i64,
     pub name: String,
     pub albums_count: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RemotePlaylist {
     pub id: i64,
     pub name: String,
@@ -328,7 +328,7 @@ impl RemotePlaylist {
 }
 
 /// Everything `catalog/search` returns, in one go.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchResults {
     pub tracks: Vec<RemoteTrack>,
     pub albums: Vec<RemoteAlbum>,
@@ -340,29 +340,60 @@ struct TokenBucket {
     last: Instant,
 }
 
+/// The shared spend against one Qobuz account.
+///
+/// Separable from the client because there can be several clients and only one
+/// account: a background crawl has its own, and the server answers several
+/// devices. All of them draw from this bucket, or the budget becomes 2/s per
+/// caller rather than per account.
+#[derive(Clone)]
+pub struct RateLimit(Arc<Mutex<TokenBucket>>);
+
+impl RateLimit {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(TokenBucket {
+            tokens: BURST,
+            last: Instant::now(),
+        })))
+    }
+}
+
+impl Default for RateLimit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct QobuzClient {
     credentials: Credentials,
     http: reqwest::Client,
     auth_token: Option<String>,
     working_secret: Option<String>,
-    limiter: Mutex<TokenBucket>,
+    limiter: RateLimit,
     rate_per_sec: f64,
 }
 
 impl QobuzClient {
     pub fn new(credentials: Credentials) -> Self {
+        Self::sharing(credentials, RateLimit::new())
+    }
+
+    /// A second client drawing on the same budget as an existing one.
+    pub fn sharing(credentials: Credentials, limiter: RateLimit) -> Self {
         let auth_token = credentials.auth_token.clone();
         Self {
             credentials,
             http: reqwest::Client::new(),
             auth_token,
             working_secret: None,
-            limiter: Mutex::new(TokenBucket {
-                tokens: BURST,
-                last: Instant::now(),
-            }),
+            limiter,
             rate_per_sec: DEFAULT_RATE_PER_SEC,
         }
+    }
+
+    /// Hand out this client's budget so another can draw on it.
+    pub fn rate_limit(&self) -> RateLimit {
+        self.limiter.clone()
     }
 
     /// Crawling politely is the default; raise this only if you know the
@@ -402,7 +433,7 @@ impl QobuzClient {
     /// concurrent callers queue rather than race.
     async fn acquire(&self) {
         let wait = {
-            let mut bucket = self.limiter.lock().unwrap_or_else(|e| e.into_inner());
+            let mut bucket = self.limiter.0.lock().unwrap_or_else(|e| e.into_inner());
             let now = Instant::now();
             let elapsed = now.duration_since(bucket.last).as_secs_f64();
             bucket.tokens = (bucket.tokens + elapsed * self.rate_per_sec).min(BURST);

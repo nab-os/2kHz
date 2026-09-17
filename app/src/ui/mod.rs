@@ -1,9 +1,8 @@
 //! The Qobuz half: browsing, playing, and crawling more of it. Live, so it
-//! sees the whole catalogue rather than just the analysed corpus; the two
-//! halves meet on track ids.
+//! sees the whole catalogue rather than just the analysed corpus.
 //!
-//! This file holds the shared Qobuz client, the database path, and the
-//! contexts every panel reads.
+//! Panels go through `crate::backend` and cannot tell local from remote. The
+//! space is the exception, always answered in-process.
 
 pub mod crawler;
 pub mod generate;
@@ -18,29 +17,20 @@ pub use pipeline::{Pipeline, PipelineView};
 pub use player::{use_transport, Player, PlayerBar};
 
 use dioxus::prelude::*;
-use qsuggest::db;
-use qsuggest::qobuz::{QobuzClient, RemoteTrack};
+use crate::api::BlockedArtist;
+use crate::qobuz::RemoteTrack;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::OnceLock;
 
 /// Qobuz pages at 100. These caps stop a four-thousand-track favourites list
 /// from stalling the panel the first time it is opened.
 pub(crate) const LIST_CAP: usize = 500;
 pub(crate) const SEARCH_LIMIT: usize = 50;
 
-static QOBUZ: OnceLock<tokio::sync::Mutex<QobuzClient>> = OnceLock::new();
-
-/// Built on first use: the app is fully usable for browsing the space without
-/// credentials, so a missing .env should only bite when you reach for Qobuz.
-pub fn client() -> anyhow::Result<&'static tokio::sync::Mutex<QobuzClient>> {
-    if let Some(existing) = QOBUZ.get() {
-        return Ok(existing);
-    }
-    let built = QobuzClient::from_repo(&qsuggest::qobuz::repo_root())?;
-    let _ = QOBUZ.set(tokio::sync::Mutex::new(built));
-    Ok(QOBUZ.get().expect("just set"))
-}
+/// How often views watching a background job re-read it. A server can't push,
+/// so the crawl and pipeline publish status and the views poll. 200ms is below
+/// where a counter starts to look stuck.
+pub(crate) const POLL: std::time::Duration = std::time::Duration::from_millis(200);
 
 // ------------------------------------------------------------------ context
 
@@ -59,7 +49,7 @@ pub struct Selection(pub Signal<Option<i64>>);
 /// cannot subscribe to.
 #[derive(Clone, Copy)]
 pub struct Blocklist {
-    pub artists: Signal<Vec<db::BlockedArtist>>,
+    pub artists: Signal<Vec<BlockedArtist>>,
     /// (artist_id, name)
     pub block: Callback<(i64, String)>,
     pub unblock: Callback<i64>,
@@ -78,17 +68,4 @@ impl Blocklist {
     fn hides(&self, track: &RemoteTrack) -> bool {
         track.artist_id.is_some_and(|id| self.contains(id))
     }
-}
-
-static DB_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
-
-/// Point the crawl-queueing path at the database the engine was loaded from.
-pub fn set_db_path(path: std::path::PathBuf) {
-    let _ = DB_PATH.set(path);
-}
-
-/// Process-global rather than a context value: it never changes, and a
-/// non-Copy context cannot be captured by the per-row event handlers.
-pub(crate) fn db_path() -> &'static std::path::Path {
-    DB_PATH.get_or_init(qsuggest::default_db_path)
 }

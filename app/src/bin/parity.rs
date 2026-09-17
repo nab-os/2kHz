@@ -65,8 +65,13 @@ fn main() -> Result<()> {
             let from: i64 = args[1].parse()?;
             let phrase = &args[2];
             let steps: usize = args.get(3).map_or(Ok(8), |v| v.parse())?;
+            // Loaded here rather than through a backend: this harness
+            // compares Rust against the Python oracle, so it should not depend
+            // on how the app is wired.
+            let embedding = text_encoder()?.embed(phrase)?;
             engine
-                .drift_by_text(from, phrase, steps, 5)?
+                .navigator
+                .drift_to_text(from, &embedding, steps, 5, &constraints)
                 .iter()
                 .map(|s| s.track.track_id)
                 .collect()
@@ -75,11 +80,7 @@ fn main() -> Result<()> {
         // the Python side value by value.
         "embed" => {
             let phrase = &args[1];
-            let encoder = engine
-                .text_encoder
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("no text encoder"))?;
-            let vector = encoder.embed(phrase)?;
+            let vector = text_encoder()?.embed(phrase)?;
             println!("{}", serde_json::to_string(&vector)?);
             return Ok(());
         }
@@ -88,4 +89,15 @@ fn main() -> Result<()> {
 
     println!("{}", serde_json::to_string(&ids)?);
     Ok(())
+}
+
+/// The CLAP text tower, straight off disk.
+fn text_encoder() -> anyhow::Result<qsuggest::text::TextEncoder> {
+    let dir = qsuggest::default_model_dir();
+    qsuggest::text::TextEncoder::load(&dir)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no text encoder in {}; run: uv run python -m qsuggest.features.onnx_export",
+            dir.display()
+        )
+    })
 }
