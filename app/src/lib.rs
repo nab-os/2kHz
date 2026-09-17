@@ -191,6 +191,12 @@ pub fn client_data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("QSUGGEST_DATA_DIR") {
         return PathBuf::from(dir);
     }
+
+    #[cfg(target_os = "android")]
+    if let Some(dir) = android_files_dir() {
+        return dir;
+    }
+
     let base = std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -199,6 +205,36 @@ pub fn client_data_dir() -> PathBuf {
                 .join("share")
         });
     base.join("qsuggest")
+}
+
+/// The app's private directory, worked out without JNI.
+///
+/// Android sets no `HOME`, so the XDG fallback lands on `/` and every write
+/// fails with EROFS. `/proc/self/cmdline` holds the package name, which is
+/// enough to build the path without hardcoding it.
+#[cfg(target_os = "android")]
+fn android_files_dir() -> Option<PathBuf> {
+    let raw = std::fs::read_to_string("/proc/self/cmdline").ok()?;
+    let package = raw
+        .split('\0')
+        .next()?
+        .split(':')
+        .next()?
+        .trim()
+        .to_string();
+    if package.is_empty() {
+        return None;
+    }
+
+    // `/data/user/0` is the real location; `/data/data` is a compatibility
+    // symlink that does not exist for secondary users or work profiles.
+    for base in ["/data/user/0", "/data/data"] {
+        let dir = PathBuf::from(base).join(&package).join("files");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return Some(dir.join("qsuggest"));
+        }
+    }
+    None
 }
 
 // ----------------------------------------------------------------- wiring
