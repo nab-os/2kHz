@@ -231,17 +231,20 @@ and no repo checkout to find a `.env` in.
 
 ```sh
 cd app
-. ./android-env.sh                 # points cc-rs at the NDK
-cargo build --release --target aarch64-linux-android \
-      --no-default-features --features mobile
+. ./android-env.sh                 # ANDROID_HOME / NDK / per-API clang wrappers
+dx build --release --platform android --target aarch64-linux-android \
+   --no-default-features --features mobile
+
+adb install -r target/dx/qsuggest-app/release/android/app/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-**arm64 only**: `manganis`, the asset crate dioxus
+`--target` matters: without it `dx` builds x86_64 for an emulator, which will
+not install on a phone. **arm64 only**, `manganis`, the asset crate dioxus
 pulls in, refuses to build for 32-bit Android.
 
 Pairing happens on a setup screen rather than through environment variables, and
 is stored in `server.json` beside the synced space.
 
-Build it with `dx`, not `cargo mobile`, the two generate conflicting JNI
-trampolines. `gen/` and `mobile.toml` are leftovers from `cargo mobile init`
-and are unused.
+Use `dx`, not `cargo android build`, the two generate conflicting JNI
+trampolines. `gen/`, `mobile.toml` and the `[package.metadata.cargo-android]`
+block are leftovers from `cargo mobile init` and are unused.
