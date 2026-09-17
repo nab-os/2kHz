@@ -1,0 +1,13 @@
+# Dioxus 0.7 build config.
+#
+# Android is built with `dx`, not the cargo-mobile2 scaffolding in gen/,
+# dioxus-desktop exports its own JNI trampoline. See src/lib.rs.
+[application]
+name = "qsuggest"
+
+[web.app]
+title = "Qobuz suggestion space"
+
+[bundle]
+identifier = "dev.dioxus.main"
+publisher = "qsuggest"

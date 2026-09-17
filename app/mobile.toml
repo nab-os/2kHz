@@ -1,0 +1,5 @@
+[app]
+name = "qsuggest"
+stylized-name = "QSuggest"
+identifier = "fr.glargh.qsuggest"
+template-pack = "dioxus"
