@@ -177,3 +177,71 @@ albums instead; re-run `build-space` and `layout` afterwards.
 The match is on `artists.id`, so a featured credit that Qobuz files under a
 different artist id can still surface, block those ids too. An ambiguous name
 refuses to act rather than guessing.
+
+## Running it on more than one machine
+
+One machine needs nothing here: `cargo run` in `app/` and everything is in
+process. The server exists so a device that *cannot* host the pipeline, a
+phone, mainly, can still use the space.
+
+```
+  Server (x86_64, the pipeline's machine)     Client (desktop / Android)
+  ───────────────────────────────────────     ──────────────────────────
+  Qobuz credentials  ──┐                      syncs ~44MB and navigates it
+  ONE 2/s rate limit ──┤                      neighbours · radio · path · drift
+  pipeline stages    ──┤                        → local, live sliders, offline
+  479MB CLAP tower   ──┘                      plays the signed URL directly
+         │                                             ▲
+         │  /api/… + SSE for stage output              │ stream URL
+         └──────── audio never proxies ────────────────┘
+```
+
+The space is synced, not queried: a neighbour lookup is microseconds, so routing
+a weight slider through a socket would cost the one property the space was built
+for. Only `embed` crosses the wire. Clients get `catalog.db`, a projection of the
+corpus down to what navigation reads, **269MB → 39MB**.
+
+```sh
+cd server
+cargo run --release -- pair --name desktop --scope pipeline   # prints a token, once
+cargo run --release -- build-catalog                          # the slim copy
+cargo run --release -- serve                                  # 127.0.0.1:7700
+```
+
+Then point a client at it:
+
+```sh
+QSUGGEST_SERVER=http://host:7700 QSUGGEST_TOKEN=<token> cargo run
+```
+
+Two scopes, both authenticated: `play` is browsing, syncing and minting a stream
+URL; `pipeline` is crawling and analysis. Each device gets its own token, stored
+only as a SHA-256 hash, so one phone can be revoked without re-pairing the rest.
+
+This speaks plain HTTP and binds to loopback. Anything beyond loopback belongs
+behind WireGuard/Tailscale or a TLS proxy.
+
+A stage started from a client **outlives that client**, so **stop** is the only
+thing that ends one early.
+
+## Android
+
+Remote-only by construction: there is no Essentia on a phone, no `uv` to spawn,
+and no repo checkout to find a `.env` in.
+
+```sh
+cd app
+. ./android-env.sh                 # points cc-rs at the NDK
+cargo build --release --target aarch64-linux-android \
+      --no-default-features --features mobile
+```
+
+**arm64 only**: `manganis`, the asset crate dioxus
+pulls in, refuses to build for 32-bit Android.
+
+Pairing happens on a setup screen rather than through environment variables, and
+is stored in `server.json` beside the synced space.
+
+Build it with `dx`, not `cargo mobile`, the two generate conflicting JNI
+trampolines. `gen/` and `mobile.toml` are leftovers from `cargo mobile init`
+and are unused.

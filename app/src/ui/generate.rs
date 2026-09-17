@@ -10,8 +10,9 @@
 use super::player::{play_list, Player};
 use super::Selection;
 use dioxus::prelude::*;
-use qsuggest::paths::{Constraints, Step};
-use qsuggest::qobuz::RemoteTrack;
+use crate::backend::backend;
+use crate::paths::{Constraints, Step};
+use crate::qobuz::RemoteTrack;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -57,6 +58,9 @@ pub struct Generator {
     /// Path shape: evenly paced interpolation rather than the shortest route.
     pub even: Signal<bool>,
     pub status: Signal<Option<String>>,
+    /// Whether the backend can turn a phrase into an embedding. Half of what
+    /// drift needs; the engine answers the other half.
+    pub tower: Signal<bool>,
 }
 
 impl Generator {
@@ -73,7 +77,13 @@ impl Generator {
             to: Signal::new(None),
             even: Signal::new(false),
             status: Signal::new(None),
+            tower: Signal::new(false),
         }
+    }
+
+    /// Whether drift is offerable at all.
+    fn can_steer(&self) -> bool {
+        *self.tower.read() && crate::engine().lock().unwrap().has_audio_embeddings()
     }
 
     /// Whether the current mode has what it needs.
@@ -85,62 +95,82 @@ impl Generator {
         }
     }
 
-    pub fn run(mut self, selected: Option<i64>) {
-        self.status.set(None);
+    /// Produce a sequence. Spawned rather than inline because drift has to
+    /// await: turning a phrase into a CLAP embedding may be a round trip. The
+    /// walk itself is always local.
+    pub fn run(self, selected: Option<i64>) {
+        let mut generator = self;
+        generator.status.set(None);
 
         let count = *self.count.peek();
-        let produced = match *self.mode.peek() {
-            Mode::Neighbours => selected.map(|id| {
-                qsuggest::engine()
-                    .lock()
-                    .unwrap()
-                    .navigator
-                    .neighbours(id, count, false)
-            }),
-            Mode::Radio => selected.map(|id| {
-                qsuggest::engine().lock().unwrap().navigator.radio_nearest(
-                    id,
-                    count,
-                    *self.artist_penalty.peek(),
-                    &Constraints::default(),
-                )
-            }),
-            Mode::Path => match (*self.from.peek(), *self.to.peek()) {
-                (Some(a), Some(b)) => {
-                    let mut guard = qsuggest::engine().lock().unwrap();
-                    Some(if *self.even.peek() {
-                        guard
-                            .navigator
-                            .interpolate(a, b, count, &Constraints::default())
-                    } else {
-                        guard.navigator.graph_path(a, b, 16)
-                    })
-                }
-                _ => None,
-            },
-            Mode::Drift => match selected {
-                Some(id) => {
-                    let phrase = self.phrase.peek().clone();
-                    let mut guard = qsuggest::engine().lock().unwrap();
-                    match guard.drift_by_text(id, &phrase, count, 5) {
-                        Ok(found) => Some(found),
-                        Err(err) => {
-                            drop(guard);
-                            self.status.set(Some(format!("{err:#}")));
-                            None
+        let mode = *self.mode.peek();
+        let penalty = *self.artist_penalty.peek();
+        let even = *self.even.peek();
+        let phrase = self.phrase.peek().clone();
+        let (from, to) = (*self.from.peek(), *self.to.peek());
+
+        spawn(async move {
+            let produced = match mode {
+                Mode::Neighbours => selected.map(|id| {
+                    crate::engine()
+                        .lock()
+                        .unwrap()
+                        .navigator
+                        .neighbours(id, count, false)
+                }),
+                Mode::Radio => selected.map(|id| {
+                    crate::engine().lock().unwrap().navigator.radio_nearest(
+                        id,
+                        count,
+                        penalty,
+                        &Constraints::default(),
+                    )
+                }),
+                Mode::Path => match (from, to) {
+                    (Some(a), Some(b)) => {
+                        let mut guard = crate::engine().lock().unwrap();
+                        Some(if even {
+                            guard.navigator.interpolate(a, b, count, &Constraints::default())
+                        } else {
+                            guard.navigator.graph_path(a, b, 16)
+                        })
+                    }
+                    _ => None,
+                },
+                Mode::Drift => match selected {
+                    Some(id) => {
+                        // Embed first, then walk. The await is outside the
+                        // lock: holding the engine across a round trip would
+                        // freeze every slider.
+                        match backend().embed(&phrase).await {
+                            Ok(embedding) => {
+                                let guard = &mut *crate::engine().lock().unwrap();
+                                Some(guard.navigator.drift_to_text(
+                                    id,
+                                    &embedding,
+                                    count,
+                                    5,
+                                    &Constraints::default(),
+                                ))
+                            }
+                            Err(err) => {
+                                generator.status.set(Some(format!("{err:#}")));
+                                None
+                            }
                         }
                     }
-                }
-                None => None,
-            },
-        };
+                    None => None,
+                },
+            };
 
-        let Some(produced) = produced else { return };
-        if produced.is_empty() {
-            self.status
-                .set(Some("nothing found, try a different start".into()));
-        }
-        self.result.set(produced);
+            let Some(produced) = produced else { return };
+            if produced.is_empty() {
+                generator
+                    .status
+                    .set(Some("nothing found, try a different start".into()));
+            }
+            generator.result.set(produced);
+        });
     }
 
     pub fn clear(mut self) {
@@ -156,7 +186,7 @@ impl Default for Generator {
 }
 
 /// Present a space track to the player, which speaks in Qobuz terms.
-fn as_remote(meta: &qsuggest::db::TrackMeta) -> RemoteTrack {
+fn as_remote(meta: &crate::db::TrackMeta) -> RemoteTrack {
     RemoteTrack {
         id: meta.track_id,
         title: meta.title.clone(),
@@ -171,9 +201,8 @@ fn as_remote(meta: &qsuggest::db::TrackMeta) -> RemoteTrack {
 }
 
 async fn export(track_ids: Vec<i64>) -> anyhow::Result<i64> {
-    let mut guard = super::client()?.lock().await;
     let name = format!("qsuggest ({} tracks)", track_ids.len());
-    guard.export_playlist(&name, &track_ids).await
+    backend().export_playlist(&name, &track_ids).await
 }
 
 #[component]
@@ -190,7 +219,7 @@ pub fn GeneratePanel() -> Element {
 
     let label_for = |id: Option<i64>| -> String {
         let Some(id) = id else { return "-".into() };
-        let guard = qsuggest::engine().lock().unwrap();
+        let guard = crate::engine().lock().unwrap();
         guard
             .navigator
             .catalog
@@ -200,6 +229,15 @@ pub fn GeneratePanel() -> Element {
             .map(|t| format!("{} - {}", t.artist, t.title))
             .unwrap_or_else(|| id.to_string())
     };
+
+    // Asked once: whether the backend has a text tower at all. Locally that
+    // is an exported ONNX file, remotely it is whether the server has one.
+    use_future(move || async move {
+        let mut tower = generator.tower;
+        if let Ok(available) = backend().can_steer().await {
+            tower.set(available);
+        }
+    });
 
     // Neighbours is cheap and browsing-shaped, so it follows the selection.
     // The other modes are journeys you start deliberately.
@@ -267,7 +305,7 @@ pub fn GeneratePanel() -> Element {
                 }
             }
 
-            if mode == Mode::Drift && !qsuggest::engine().lock().unwrap().can_steer() {
+            if mode == Mode::Drift && !generator.can_steer() {
                 p { class: "muted error",
                     "Drift needs the exported CLAP text tower. Run: "
                     code { "uv run python -m qsuggest.features.onnx_export" }

@@ -3,11 +3,11 @@
 //! Navigation is explicit rather than reactive: every move sets the view and
 //! spawns its own load. One `Shelf` holds whatever the view returned.
 
-use super::{client, db_path, Blocklist, LocalIds, Selection, LIST_CAP, SEARCH_LIMIT};
 use super::player::{enqueue, play_list, Player};
+use super::{Blocklist, LocalIds, Selection, LIST_CAP, SEARCH_LIMIT};
 use dioxus::prelude::*;
-use qsuggest::db;
-use qsuggest::qobuz::RemoteTrack;
+use crate::backend::backend;
+use crate::qobuz::RemoteTrack;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum View {
@@ -57,12 +57,12 @@ enum Tab {
 #[derive(Clone, Default, PartialEq)]
 pub struct Shelf {
     pub tracks: Vec<RemoteTrack>,
-    pub albums: Vec<qsuggest::qobuz::RemoteAlbum>,
-    pub artists: Vec<qsuggest::qobuz::RemoteArtist>,
-    pub playlists: Vec<qsuggest::qobuz::RemotePlaylist>,
+    pub albums: Vec<crate::qobuz::RemoteAlbum>,
+    pub artists: Vec<crate::qobuz::RemoteArtist>,
+    pub playlists: Vec<crate::qobuz::RemotePlaylist>,
     /// Shown under an artist: the same hop the Python crawler takes when it
     /// expands the frontier, so you can see where analysis would go next.
-    pub similar: Vec<qsuggest::qobuz::RemoteArtist>,
+    pub similar: Vec<crate::qobuz::RemoteArtist>,
 }
 
 #[derive(Clone, Copy)]
@@ -154,29 +154,28 @@ pub fn open_initial(library: Library) {
 }
 
 async fn load(view: View) -> anyhow::Result<Shelf> {
-    let mut guard = client()?.lock().await;
     let mut shelf = Shelf::default();
 
     match view {
         // Clicking the search tab before typing anything is not a query.
         View::Search(query) if query.trim().is_empty() => {}
         View::Search(query) => {
-            let found = guard.search(&query, SEARCH_LIMIT).await?;
+            let found = backend().search(&query, SEARCH_LIMIT).await?;
             shelf.tracks = found.tracks;
             shelf.albums = found.albums;
             shelf.artists = found.artists;
         }
-        View::FavouriteTracks => shelf.tracks = guard.favorite_tracks(LIST_CAP).await?,
-        View::FavouriteAlbums => shelf.albums = guard.favorite_albums(LIST_CAP).await?,
-        View::FavouriteArtists => shelf.artists = guard.favorite_artists(LIST_CAP).await?,
-        View::Playlists => shelf.playlists = guard.user_playlists(LIST_CAP).await?,
-        View::Playlist { id, .. } => shelf.tracks = guard.playlist_tracks(id, LIST_CAP).await?,
-        View::Album { id, .. } => shelf.tracks = guard.album_tracks(&id).await?.1,
+        View::FavouriteTracks => shelf.tracks = backend().favourite_tracks(LIST_CAP).await?,
+        View::FavouriteAlbums => shelf.albums = backend().favourite_albums(LIST_CAP).await?,
+        View::FavouriteArtists => shelf.artists = backend().favourite_artists(LIST_CAP).await?,
+        View::Playlists => shelf.playlists = backend().playlists(LIST_CAP).await?,
+        View::Playlist { id, .. } => shelf.tracks = backend().playlist_tracks(id, LIST_CAP).await?,
+        View::Album { id, .. } => shelf.tracks = backend().album_tracks(&id).await?,
         View::Artist { id, .. } => {
-            shelf.albums = guard.artist_albums(id, LIST_CAP).await?.1;
+            shelf.albums = backend().artist_albums(id, LIST_CAP).await?;
             // Not fatal: an artist with no similar list should still show a
             // discography rather than an error.
-            shelf.similar = guard.similar_artists(id, 20).await.unwrap_or_default();
+            shelf.similar = backend().similar_artists(id, 20).await.unwrap_or_default();
         }
     }
 
@@ -209,13 +208,9 @@ fn request_analysis(library: Library, kind: &str, id: &str, label: &str) {
 }
 
 async fn fetch_into_catalog(kind: &str, id: &str) -> anyhow::Result<usize> {
-    let mut guard = client()?.lock().await;
-
-    let conn = db::open_for_write(db_path())?;
-
     match kind {
-        "artist" => qsuggest::crawl::discover_artist(&conn, &mut guard, id.parse()?).await,
-        _ => qsuggest::crawl::crawl_one_album(&conn, &mut guard, id).await,
+        "artist" => backend().fetch_artist(id.parse()?).await,
+        _ => backend().fetch_album(id).await,
     }
 }
 
@@ -419,7 +414,7 @@ impl Shelf {
             .collect()
     }
 
-    pub fn visible_albums(&self, blocked: &Blocklist) -> Vec<qsuggest::qobuz::RemoteAlbum> {
+    pub fn visible_albums(&self, blocked: &Blocklist) -> Vec<crate::qobuz::RemoteAlbum> {
         self.albums
             .iter()
             .filter(|album| !album.artist_id.is_some_and(|id| blocked.contains(id)))
@@ -431,7 +426,7 @@ impl Shelf {
         &self,
         blocked: &Blocklist,
         similar: bool,
-    ) -> Vec<qsuggest::qobuz::RemoteArtist> {
+    ) -> Vec<crate::qobuz::RemoteArtist> {
         let source = if similar { &self.similar } else { &self.artists };
         source
             .iter()
@@ -555,12 +550,7 @@ fn AlbumRows() -> Element {
                                 .map(|a| a.id.clone());
                             let Some(id) = id else { return };
                             spawn(async move {
-                                let fetched = {
-                                    let Ok(handle) = client() else { return };
-                                    let mut guard = handle.lock().await;
-                                    guard.album_tracks(&id).await
-                                };
-                                if let Ok((_, tracks)) = fetched {
+                                if let Ok(tracks) = backend().album_tracks(&id).await {
                                     play_list(player, tracks, 0);
                                 }
                             });

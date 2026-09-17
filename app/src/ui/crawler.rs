@@ -1,132 +1,59 @@
 //! A crawl running in the background while you browse.
 //!
-//! Stepped one frontier item at a time, with the Qobuz client released around
-//! each step, so search and playback never wait longer than one item.
-//!
-//! The controls live in the pipeline view; this is only the machinery.
+//! The loop lives in the backend, its own thread locally, the server
+//! remotely, and this is the view's handle on it. That is what lets a crawl
+//! outlive the panel, and remotely the client.
 
-use super::{client, db_path};
+use super::POLL;
 use dioxus::prelude::*;
-use qsuggest::db;
+use crate::api::CrawlStatus;
+use crate::backend::backend;
+use crate::crawl::DEFAULT_MAX_DISTANCE;
 
-/// A crawl running in the background while you browse. Stepped one frontier
-/// item at a time, with the Qobuz client released around each step, so search
-/// and playback never wait longer than one item.
 #[derive(Clone, Copy)]
 pub struct Crawler {
-    pub running: Signal<bool>,
-    pub stats: Signal<qsuggest::crawl::Stats>,
-    pub tracks: Signal<i64>,
-    pub pending: Signal<i64>,
-    pub last: Signal<Option<String>>,
-    /// Set to ask the loop to stop after the current step.
-    stop: Signal<bool>,
+    pub status: Signal<CrawlStatus>,
+    /// Set the moment start or stop is pressed, so the buttons react before
+    /// the next poll comes back and confirms it.
+    pub pending: Signal<bool>,
 }
 
 impl Crawler {
     pub fn new() -> Self {
         Self {
-            running: Signal::new(false),
-            stats: Signal::new(Default::default()),
-            tracks: Signal::new(0),
-            pending: Signal::new(0),
-            last: Signal::new(None),
-            stop: Signal::new(false),
+            status: Signal::new(CrawlStatus::default()),
+            pending: Signal::new(false),
         }
     }
 
-    pub fn request_stop(mut self) {
-        self.stop.set(true);
+    pub fn running(&self) -> bool {
+        self.status.read().running
     }
 
-    /// Run the frontier until it empties, the budget is hit, or stop is asked.
-    pub fn start(mut self, max_distance: i64) {
-        if *self.running.peek() {
+    pub fn last(&self) -> Option<String> {
+        self.status.read().last.clone()
+    }
+
+    pub fn start(mut self) {
+        if self.running() {
             return;
         }
-        self.stop.set(false);
-        self.running.set(true);
-        self.stats.set(Default::default());
-        self.last.set(Some("starting…".into()));
-
+        self.pending.set(true);
         spawn(async move {
             let mut crawler = self;
-            let conn = match db::open_for_write(db_path()) {
-                Ok(conn) => conn,
-                Err(err) => {
-                    crawler.last.set(Some(format!("{err:#}")));
-                    crawler.running.set(false);
-                    return;
-                }
-            };
-
-            // No budget: the frontier and the stop button are the limits.
-            let max_tracks = i64::MAX;
-
-            loop {
-                if *crawler.stop.peek() {
-                    crawler.last.set(Some("stopped".into()));
-                    break;
-                }
-
-                // Scoped so the client is free again before the next await.
-                let outcome = {
-                    let handle = match client() {
-                        Ok(handle) => handle,
-                        Err(err) => {
-                            crawler.last.set(Some(format!("{err:#}")));
-                            break;
-                        }
-                    };
-                    let mut guard = handle.lock().await;
-                    qsuggest::crawl::step(&conn, &mut guard, max_tracks, max_distance).await
-                };
-
-                let result = match outcome {
-                    Ok(result) => result,
-                    Err(err) => {
-                        crawler.last.set(Some(format!("{err:#}")));
-                        break;
-                    }
-                };
-
-                crawler.last.set(Some(match &result {
-                    qsuggest::crawl::StepResult::Expanded { kind, ref_id } => {
-                        format!("{kind} {ref_id}")
-                    }
-                    qsuggest::crawl::StepResult::Skipped { kind, ref_id } => {
-                        format!("skipped {kind} {ref_id}")
-                    }
-                    qsuggest::crawl::StepResult::Failed { kind, ref_id, error } => {
-                        format!("{kind} {ref_id}: {error}")
-                    }
-                    qsuggest::crawl::StepResult::Exhausted => "frontier exhausted".into(),
-                    qsuggest::crawl::StepResult::BudgetReached => "budget reached".into(),
-                }));
-
-                let mut stats = crawler.stats.peek().clone();
-                let keep_going = stats.absorb(&result);
-                crawler.stats.set(stats);
-
-                crawler.tracks.set(
-                    conn.query_row("SELECT COUNT(*) FROM tracks", [], |row| row.get(0))
-                        .unwrap_or(0),
-                );
-                crawler.pending.set(
-                    conn.query_row(
-                        "SELECT COUNT(*) FROM frontier WHERE state = 'pending'",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(0),
-                );
-
-                if !keep_going {
-                    break;
-                }
+            if let Err(err) = backend().crawl_start(DEFAULT_MAX_DISTANCE).await {
+                crawler.status.write().last = Some(format!("{err:#}"));
             }
+            crawler.pending.set(false);
+        });
+    }
 
-            crawler.running.set(false);
+    pub fn request_stop(self) {
+        spawn(async move {
+            let mut crawler = self;
+            if let Err(err) = backend().crawl_stop().await {
+                crawler.status.write().last = Some(format!("{err:#}"));
+            }
         });
     }
 }
@@ -135,4 +62,20 @@ impl Default for Crawler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Keep the crawl status fresh. Mounted once, for the life of the window.
+pub fn use_crawl_status(crawler: Crawler) {
+    use_future(move || async move {
+        let mut crawler = crawler;
+        loop {
+            match backend().crawl_status().await {
+                Ok(status) => crawler.status.set(status),
+                // A server that has gone away should not spin the log; the
+                // pipeline panel reports it once and the next poll retries.
+                Err(_) => crawler.status.write().running = false,
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    });
 }

@@ -1,234 +1,120 @@
-//! Driving the whole pipeline from the app.
+//! Driving the whole pipeline, wherever it actually runs.
 //!
-//! Four stages: crawling is native, the other three are Python subprocesses
-//! whose output is streamed here. Progress goes to stderr and results to
-//! stdout, so both are read and interleaved.
+//! Four stages: crawling is native, the other three are Python subprocesses.
+//!
+//! This view no longer spawns anything, it asks the backend to start a stage
+//! and watches the status and log it publishes. Remotely that means a stage
+//! started here outlives this window, which is the point. **Stop** is the only
+//! way one ends early.
 
 use super::crawler::Crawler;
+use super::POLL;
 use dioxus::prelude::*;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use crate::api::{Corpus, Device, PipelineStatus, Scope, Stage};
+use crate::backend::{backend, is_remote};
 
-/// How often to look at the cancel flag while a stage is running. It cannot
-/// only be checked between output lines: `layout` goes silent for minutes
-/// while UMAP runs.
-const CANCEL_POLL: Duration = Duration::from_millis(200);
-
-/// Keep the log bounded; `analyse` over a large corpus prints thousands of
-/// lines and nobody scrolls back that far.
-const MAX_LOG_LINES: usize = 400;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Stage {
-    Crawl,
-    Analyse,
-    BuildSpace,
-    Layout,
-}
-
-impl Stage {
-    pub fn label(self) -> &'static str {
-        match self {
-            Stage::Crawl => "crawl",
-            Stage::Analyse => "analyse",
-            Stage::BuildSpace => "build space",
-            Stage::Layout => "layout",
-        }
-    }
-
-    /// The `qsuggest` subcommand, for the three stages that are Python.
-    fn command(self) -> Option<&'static str> {
-        match self {
-            Stage::Crawl => None,
-            Stage::Analyse => Some("analyse"),
-            Stage::BuildSpace => Some("build-space"),
-            Stage::Layout => Some("layout"),
-        }
-    }
-
-    pub fn blurb(self) -> &'static str {
-        match self {
-            Stage::Crawl => "Follow similar artists outward from your favourites.",
-            Stage::Analyse => "Download excerpts and extract features. The slow one.",
-            Stage::BuildSpace => "Assemble the vectors. Seconds, no network.",
-            Stage::Layout => "UMAP projection for the map.",
-        }
-    }
-
-    /// Whether finishing this stage invalidates the space the app has loaded.
-    fn rebuilds_space(self) -> bool {
-        matches!(self, Stage::BuildSpace | Stage::Layout)
-    }
-}
-
-/// The three that terminate on their own, in dependency order. Crawl runs
-/// until the frontier empties, so it is not queued behind other work.
-pub const FULL_RUN: [Stage; 3] = [Stage::Analyse, Stage::BuildSpace, Stage::Layout];
-
-/// What still needs doing, phrased as the stages themselves would phrase it.
-///
-/// Each field is asked the way its stage asks it. Deriving them arithmetically
-/// is wrong: the populations differ over blocked artists.
-#[derive(Clone, Default, PartialEq)]
-pub struct Corpus {
-    pub tracks: i64,
-    /// Rows in `features`, whatever their artist.
-    pub analysed: i64,
-    /// Exactly what `analyse` would queue: unanalysed, not failed, not blocked.
-    pub to_analyse: i64,
-    pub failed: i64,
-    /// Frontier entries waiting for a crawl.
-    pub pending: i64,
-    /// What `build-space` would include if run now.
-    pub buildable: i64,
-    /// Tracks in the space the app currently has loaded.
-    pub in_space: i64,
-    /// Of those, the ones with coordinates, the points actually drawn.
-    pub on_map: i64,
-}
+/// How many status polls pass between corpus recounts. Six SQL aggregates
+/// over the whole catalogue would be the most expensive idle thing the app
+/// does at 200ms.
+const CORPUS_EVERY: u32 = 10;
 
 #[derive(Clone, Copy)]
 pub struct Pipeline {
-    pub running: Signal<Option<Stage>>,
+    pub status: Signal<PipelineStatus>,
     pub log: Signal<Vec<String>>,
     pub corpus: Signal<Corpus>,
-    /// Bumped when the space on disk has been rebuilt, so the shell knows to
-    /// reload the engine and redraw the map.
+    /// Bumped when the space underneath has been rebuilt, so the shell knows
+    /// to reload the engine and redraw the map.
     pub generation: Signal<u64>,
     /// (in_space, on_map), written by the shell, only it can see the engine.
     pub space_counts: Signal<(i64, i64)>,
-    /// Stages still to run in a chained job.
-    queue: Signal<Vec<Stage>>,
-    cancel: Signal<bool>,
+    /// Whatever the backend last refused to do.
+    pub error: Signal<Option<String>>,
+    pub devices: Signal<Vec<Device>>,
+    /// A token, shown exactly once, right after pairing.
+    pub granted: Signal<Option<String>>,
 }
 
 impl Pipeline {
     pub fn new() -> Self {
         Self {
-            running: Signal::new(None),
+            status: Signal::new(PipelineStatus::default()),
             log: Signal::new(Vec::new()),
             corpus: Signal::new(Corpus::default()),
             generation: Signal::new(0),
             space_counts: Signal::new((0, 0)),
-            queue: Signal::new(Vec::new()),
-            cancel: Signal::new(false),
+            error: Signal::new(None),
+            devices: Signal::new(Vec::new()),
+            granted: Signal::new(None),
         }
     }
 
-    fn say(mut self, line: impl Into<String>) {
-        let mut log = self.log.write();
-        log.push(line.into());
-        let overflow = log.len().saturating_sub(MAX_LOG_LINES);
-        if overflow > 0 {
-            log.drain(..overflow);
-        }
+    pub fn running(&self) -> Option<Stage> {
+        self.status.read().running
     }
 
     pub fn clear_log(mut self) {
         self.log.set(Vec::new());
-    }
-
-    /// Re-read the counts that tell you what still needs running. `in_space`
-    /// and `on_map` come from the loaded engine: the question is what the app
-    /// is drawing, not what is on disk.
-    pub fn refresh(mut self) {
-        let Ok(conn) = rusqlite::Connection::open(super::db_path()) else {
-            return;
-        };
-        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
-
-        // Mirrors analyse.pending_tracks, including the blocklist clause and
-        // the stale-extractor check.
-        let to_analyse = count(
-            "SELECT COUNT(*) FROM tracks t
-             LEFT JOIN features f ON f.track_id = t.id
-             LEFT JOIN failures x ON x.track_id = t.id
-             WHERE x.track_id IS NULL
-               AND (f.track_id IS NULL
-                    OR f.extractor_version != (SELECT extractor_version FROM features
-                                               ORDER BY analysed_at DESC LIMIT 1))
-               AND (t.artist_id IS NULL
-                    OR t.artist_id NOT IN (SELECT artist_id FROM blocked_artists))",
-        );
-
-        // Mirrors space.load_rows.
-        let buildable = count(
-            "SELECT COUNT(*) FROM tracks t
-             JOIN features f ON f.track_id = t.id
-             WHERE t.artist_id IS NULL
-                OR t.artist_id NOT IN (SELECT artist_id FROM blocked_artists)",
-        );
-
-        let (in_space, on_map) = *self.space_counts.peek();
-
-        self.corpus.set(Corpus {
-            tracks: count("SELECT COUNT(*) FROM tracks"),
-            analysed: count("SELECT COUNT(*) FROM features"),
-            to_analyse,
-            failed: count("SELECT COUNT(*) FROM failures"),
-            pending: count("SELECT COUNT(*) FROM frontier WHERE state = 'pending'"),
-            buildable,
-            in_space,
-            on_map,
+        spawn(async move {
+            let _ = backend().pipeline_clear_log().await;
         });
     }
 
-    pub fn cancel_running(mut self) {
-        self.cancel.set(true);
-        self.queue.set(Vec::new());
+    /// Re-read the counts that tell you what still needs running. `in_space`
+    /// and `on_map` come from the loaded engine: the question is what this app
+    /// is drawing, not what is on disk.
+    pub fn refresh(self) {
+        spawn(async move {
+            let mut pipeline = self;
+            if let Ok(mut corpus) = backend().corpus().await {
+                let (in_space, on_map) = *pipeline.space_counts.peek();
+                corpus.in_space = in_space;
+                corpus.on_map = on_map;
+                pipeline.corpus.set(corpus);
+            }
+        });
     }
 
-    /// Run one Python stage, or start the native crawl.
     pub fn start(mut self, stage: Stage, crawler: Crawler) {
-        if self.running.peek().is_some() {
+        if self.running().is_some() {
             return;
         }
         if stage == Stage::Crawl {
-            crawler.start(qsuggest::crawl::DEFAULT_MAX_DISTANCE);
+            crawler.start();
             return;
         }
-
-        self.cancel.set(false);
-        self.running.set(Some(stage));
-        self.say(format!("$ uv run qsuggest {}", stage.command().unwrap_or("")));
-
+        self.error.set(None);
         spawn(async move {
-            let pipeline = self;
-            match run_python(pipeline, stage).await {
-                Ok(0) => pipeline.say(format!("{} finished", stage.label())),
-                Ok(code) => pipeline.say(format!("{} exited with status {code}", stage.label())),
-                Err(err) => pipeline.say(format!("{} failed: {err:#}", stage.label())),
-            }
-
-            let mut pipeline = pipeline;
-            pipeline.running.set(None);
-            pipeline.refresh();
-            if stage.rebuilds_space() {
-                let next = *pipeline.generation.peek() + 1;
-                pipeline.generation.set(next);
-            }
-
-            // Chained run: take the next stage, unless something cancelled it.
-            let next = pipeline.queue.write().pop();
-            if let Some(next) = next {
-                if !*pipeline.cancel.peek() {
-                    pipeline.start(next, crawler);
-                }
+            let mut pipeline = self;
+            if let Err(err) = backend().pipeline_start(stage).await {
+                pipeline.error.set(Some(format!("{err:#}")));
             }
         });
     }
 
     /// Queue analyse, then build-space, then layout.
-    pub fn start_full_run(mut self, crawler: Crawler) {
-        if self.running.peek().is_some() {
+    pub fn start_full_run(mut self) {
+        if self.running().is_some() {
             return;
         }
-        // Reversed: the queue is popped from the back.
-        let mut rest: Vec<Stage> = FULL_RUN[1..].to_vec();
-        rest.reverse();
-        self.queue.set(rest);
-        self.start(FULL_RUN[0], crawler);
+        self.error.set(None);
+        spawn(async move {
+            let mut pipeline = self;
+            if let Err(err) = backend().pipeline_start_full().await {
+                pipeline.error.set(Some(format!("{err:#}")));
+            }
+        });
+    }
+
+    pub fn stop(mut self, crawler: Crawler) {
+        self.error.set(None);
+        crawler.request_stop();
+        spawn(async move {
+            let mut pipeline = self;
+            if let Err(err) = backend().pipeline_stop().await {
+                pipeline.error.set(Some(format!("{err:#}")));
+            }
+        });
     }
 }
 
@@ -238,153 +124,40 @@ impl Default for Pipeline {
     }
 }
 
-/// Where `uv` lives. Not just "uv", a desktop launcher gives a minimal PATH
-/// without ~/.local/bin, and the failure then looks like a broken pipeline.
-fn uv_path() -> std::path::PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        for candidate in [".local/bin/uv", ".cargo/bin/uv"] {
-            let path = std::path::Path::new(&home).join(candidate);
-            if path.is_file() {
-                return path;
+/// Keep the status, the log and the counts fresh. Mounted once. One future
+/// rather than three, so the log cursor and the status cannot disagree about
+/// whether a stage is running.
+pub fn use_pipeline_watch(pipeline: Pipeline) {
+    use_future(move || async move {
+        let mut pipeline = pipeline;
+        let mut ticks: u32 = 0;
+
+        loop {
+            if let Ok(status) = backend().pipeline_status().await {
+                let generation = status.generation;
+                pipeline.status.set(status);
+                if generation != *pipeline.generation.peek() {
+                    pipeline.generation.set(generation);
+                }
             }
+
+            // A mirror, not an accumulation, the backend's buffer is
+            // already bounded and authoritative, so a reconnecting log shows
+            // the tail once.
+            if let Ok(lines) = backend().pipeline_log().await {
+                if *pipeline.log.peek() != lines {
+                    pipeline.log.set(lines);
+                }
+            }
+
+            if ticks % CORPUS_EVERY == 0 {
+                pipeline.refresh();
+            }
+            ticks = ticks.wrapping_add(1);
+
+            tokio::time::sleep(POLL).await;
         }
-    }
-    std::path::PathBuf::from("uv")
-}
-
-// --------------------------------------------------------- exit cleanup
-//
-// A stage outliving the window is the worst failure here: `analyse` holds a
-// pool of workers that would go on burning cores with no UI to stop them.
-//
-// One stage at a time, so this is a single atomic rather than a set behind a
-// lock, the cleanup runs from a signal handler, where locking is not
-// permitted but `kill` is.
-
-#[cfg(unix)]
-static ACTIVE_GROUP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
-#[cfg(unix)]
-fn set_active_group(pgid: i32) {
-    ACTIVE_GROUP.store(pgid, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Signal whatever stage is still running. Safe to call more than once.
-#[cfg(unix)]
-extern "C" fn reap_active_group() {
-    let pgid = ACTIVE_GROUP.swap(0, std::sync::atomic::Ordering::SeqCst);
-    if pgid > 0 {
-        unsafe {
-            libc::kill(-pgid, libc::SIGTERM);
-        }
-    }
-}
-
-#[cfg(unix)]
-extern "C" fn reap_then_die(signal: i32) {
-    reap_active_group();
-    // Restore the default action and re-raise, so the app still dies the way
-    // whoever signalled it expects.
-    unsafe {
-        libc::signal(signal, libc::SIG_DFL);
-        libc::raise(signal);
-    }
-}
-
-/// Make sure a running stage does not outlive the app. Call once at startup.
-///
-/// `atexit` covers a normal quit; the handlers cover Ctrl-C or a session
-/// shutdown. SIGKILL runs nothing, in practice the stage still dies when the
-/// app's pipes close, but that is the pipes doing it, not us.
-pub fn install_exit_guard() {
-    #[cfg(unix)]
-    unsafe {
-        libc::atexit(reap_active_group);
-        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-            libc::signal(signal, reap_then_die as *const () as libc::sighandler_t);
-        }
-    }
-}
-
-/// Stop a stage and everything it started.
-fn terminate(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        set_active_group(0);
-        // Negative pid addresses the process group. SIGTERM so Python can
-        // unwind; the pool workers go with it.
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
-        }
-        return;
-    }
-    let _ = child.start_kill();
-}
-
-async fn run_python(pipeline: Pipeline, stage: Stage) -> anyhow::Result<i32> {
-    let command = stage
-        .command()
-        .ok_or_else(|| anyhow::anyhow!("{} is not a Python stage", stage.label()))?;
-
-    let mut builder = tokio::process::Command::new(uv_path());
-    builder
-        .args(["run", "qsuggest", command])
-        .current_dir(qsuggest::qobuz::repo_root().join("pipeline"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    // Its own process group, so cancelling takes the whole tree down.
-    // `uv run` spawns qsuggest, which spawns its own workers; killing uv alone
-    // leaves them running.
-    #[cfg(unix)]
-    builder.process_group(0);
-
-    let mut child = builder
-        .spawn()
-        .map_err(|err| {
-            anyhow::anyhow!("could not start {}: {err}", uv_path().display())
-        })?;
-
-    // Its pgid equals its pid, because of process_group(0) above.
-    #[cfg(unix)]
-    set_active_group(child.id().unwrap_or(0) as i32);
-
-    let mut out = BufReader::new(child.stdout.take().expect("piped")).lines();
-    let mut err = BufReader::new(child.stderr.take().expect("piped")).lines();
-    let (mut out_done, mut err_done) = (false, false);
-
-    loop {
-        if out_done && err_done {
-            break;
-        }
-
-        tokio::select! {
-            line = out.next_line(), if !out_done => match line? {
-                Some(line) => pipeline.say(line),
-                None => out_done = true,
-            },
-            line = err.next_line(), if !err_done => match line? {
-                // The CLI reports progress on stderr; it is not an error.
-                Some(line) => pipeline.say(line),
-                None => err_done = true,
-            },
-            // Wakes the loop even when the stage is silent, so the check below
-            // actually gets a chance to run.
-            _ = tokio::time::sleep(CANCEL_POLL) => {}
-        }
-
-        if *pipeline.cancel.peek() {
-            terminate(&mut child);
-            pipeline.say("cancelled");
-            break;
-        }
-    }
-
-    let status = child.wait().await?;
-    #[cfg(unix)]
-    set_active_group(0);
-    Ok(status.code().unwrap_or(-1))
+    });
 }
 
 // ------------------------------------------------------------------- view
@@ -394,16 +167,12 @@ pub fn PipelineView() -> Element {
     let pipeline = use_context::<Pipeline>();
     let crawler = use_context::<Crawler>();
 
-    let running = *pipeline.running.read();
-    let crawling = *crawler.running.read();
+    let running = pipeline.running();
+    let crawling = crawler.running();
     let busy = running.is_some() || crawling;
     let corpus = pipeline.corpus.read().clone();
     let log = pipeline.log.read().clone();
-
-    // The counts are what tell you which stage is worth running next.
-    use_effect(move || {
-        pipeline.refresh();
-    });
+    let queued = pipeline.status.read().queued.clone();
 
     // Each hint names the stage that would fix it, and is derived from the
     // same question that stage asks.
@@ -440,27 +209,33 @@ pub fn PipelineView() -> Element {
 
             section { class: "panel",
                 h2 { "Stages" }
+                if is_remote() {
+                    p { class: "muted",
+                        "Running on the server. A stage started here keeps going if you close this window, use stop to end it."
+                    }
+                }
                 div { class: "actions",
                     button {
                         class: "primary",
                         disabled: busy,
-                        onclick: move |_| pipeline.start_full_run(crawler),
+                        onclick: move |_| pipeline.start_full_run(),
                         "run analyse → space → layout"
                     }
                     if busy {
                         button {
                             class: "danger",
-                            onclick: move |_| {
-                                pipeline.cancel_running();
-                                crawler.request_stop();
-                            },
+                            onclick: move |_| pipeline.stop(crawler),
                             "stop"
                         }
                     }
                 }
 
+                if let Some(message) = pipeline.error.read().clone() {
+                    p { class: "muted error", "{message}" }
+                }
+
                 ul { class: "stages",
-                    for stage in [Stage::Crawl, Stage::Analyse, Stage::BuildSpace, Stage::Layout] {
+                    for stage in Stage::ALL {
                         li {
                             key: "{stage.label()}",
                             class: if running == Some(stage) || (stage == Stage::Crawl && crawling) {
@@ -471,7 +246,9 @@ pub fn PipelineView() -> Element {
                             div { class: "stage-name", "{stage.label()}" }
                             div { class: "stage-blurb muted", "{stage.blurb()}" }
                             div { class: "stage-run",
-                                if stage == Stage::Crawl && crawling {
+                                if queued.contains(&stage) {
+                                    span { class: "muted", "queued" }
+                                } else if stage == Stage::Crawl && crawling {
                                     button {
                                         class: "danger",
                                         onclick: move |_| crawler.request_stop(),
@@ -492,7 +269,7 @@ pub fn PipelineView() -> Element {
                 if crawling {
                     p { class: "muted ellipsis",
                         "crawling: "
-                        {crawler.last.read().clone().unwrap_or_default()}
+                        {crawler.last().unwrap_or_default()}
                     }
                 }
             }
@@ -509,6 +286,126 @@ pub fn PipelineView() -> Element {
                     }
                     for (index, line) in log.into_iter().enumerate() {
                         div { key: "{index}", "{line}" }
+                    }
+                }
+            }
+
+            if is_remote() {
+                Devices {}
+            }
+        }
+    }
+}
+
+/// Paired devices, and a way to add or revoke one. Remote mode only, and
+/// needs the `pipeline` scope itself, a `play` phone cannot mint itself a
+/// promotion.
+#[component]
+fn Devices() -> Element {
+    let pipeline = use_context::<Pipeline>();
+    let mut name = use_signal(String::new);
+    let mut scope = use_signal(|| Scope::Play);
+
+    let devices = pipeline.devices.read().clone();
+
+    use_future(move || async move {
+        let mut pipeline = pipeline;
+        if let Ok(found) = backend().devices().await {
+            pipeline.devices.set(found);
+        }
+    });
+
+    let refresh = move || {
+        spawn(async move {
+            let mut pipeline = pipeline;
+            if let Ok(found) = backend().devices().await {
+                pipeline.devices.set(found);
+            }
+        });
+    };
+
+    rsx! {
+        section { class: "panel",
+            h2 { "Devices" }
+            p { class: "muted",
+                "Each device gets its own token, so one phone can be revoked without re-pairing the rest. The token is shown once."
+            }
+
+            div { class: "field",
+                input {
+                    class: "search",
+                    placeholder: "device name, e.g. phone",
+                    value: "{name}",
+                    oninput: move |event| name.set(event.value()),
+                }
+                button {
+                    class: if *scope.read() == Scope::Play { "chip active" } else { "chip" },
+                    onclick: move |_| scope.set(Scope::Play),
+                    "play"
+                }
+                button {
+                    class: if *scope.read() == Scope::Pipeline { "chip active" } else { "chip" },
+                    onclick: move |_| scope.set(Scope::Pipeline),
+                    "pipeline"
+                }
+                button {
+                    class: "primary",
+                    disabled: name.read().trim().is_empty(),
+                    onclick: move |_| {
+                        let wanted = name.peek().trim().to_string();
+                        let chosen = *scope.peek();
+                        spawn(async move {
+                            let mut pipeline = pipeline;
+                            match backend().pair_device(&wanted, chosen).await {
+                                Ok(grant) => {
+                                    pipeline.granted.set(Some(grant.token));
+                                    name.set(String::new());
+                                    if let Ok(found) = backend().devices().await {
+                                        pipeline.devices.set(found);
+                                    }
+                                }
+                                Err(err) => pipeline.error.set(Some(format!("{err:#}"))),
+                            }
+                        });
+                    },
+                    "pair"
+                }
+            }
+
+            if let Some(token) = pipeline.granted.read().clone() {
+                div { class: "notice",
+                    p { class: "muted", "Set this on the device, then close this. It is not shown again." }
+                    pre { class: "log", "QSUGGEST_TOKEN={token}" }
+                    button {
+                        class: "chip",
+                        onclick: move |_| { let mut pipeline = pipeline; pipeline.granted.set(None); },
+                        "done"
+                    }
+                }
+            }
+
+            ul { class: "list",
+                for device in devices {
+                    li { key: "{device.id}", class: "row",
+                        span { class: "title", "{device.name}" }
+                        span { class: "muted tag", "{device.scope.as_str()}" }
+                        span { class: "muted",
+                            {device.last_seen.clone().unwrap_or_else(|| "never seen".into())}
+                        }
+                        button {
+                            class: "chip danger",
+                            onclick: move |_| {
+                                let id = device.id;
+                                spawn(async move {
+                                    let mut pipeline = pipeline;
+                                    if let Err(err) = backend().revoke_device(id).await {
+                                        pipeline.error.set(Some(format!("{err:#}")));
+                                    }
+                                });
+                                refresh();
+                            },
+                            "revoke"
+                        }
                     }
                 }
             }
