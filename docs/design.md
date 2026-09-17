@@ -162,6 +162,10 @@ bandwidth story changes. Ten-minute test: mint a URL on the server, then
   or audio focus. For a music app that is the product, not a rough edge, it
   wants a native `MediaSessionService` fed the signed URL, with Rust keeping
   only the queue.
+- **The applicationId must differ from `dev.dioxus.main`.** The CLI emits
+  `typealias BuildConfig = <applicationId>.BuildConfig` into a file that is
+  itself in `package dev.dioxus.main`, so reusing the id makes that typealias
+  refer to itself and Kotlin fails to compile.
 
 ## Web
 

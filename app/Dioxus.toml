@@ -9,5 +9,5 @@ name = "qsuggest"
 title = "Qobuz suggestion space"
 
 [bundle]
-identifier = "dev.dioxus.main"
+identifier = "fr.glargh.qsuggest"
 publisher = "qsuggest"
