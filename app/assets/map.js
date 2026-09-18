@@ -274,7 +274,10 @@
   // pans, two pinch; tap sets `hover`, the only way to see a label.
 
   let touchStart = null;
+  // Finger separation at the last sample, and how many fingers it was measured
+  // from, a delta is only meaningful within one gesture shape.
   let pinch = 0;
+  let touchCount = 0;
 
   function centre(touches) {
     const rect = canvas.getBoundingClientRect();
@@ -293,11 +296,96 @@
     return Math.hypot(dx, dy);
   }
 
+  /// Re-measure the gesture from the fingers that are down right now.
+  function reseed(touches) {
+    if (touches.length === 0) {
+      pinch = 0;
+      touchCount = 0;
+      return;
+    }
+    last = centre(touches);
+    pinch = touches.length >= 2 ? spread(touches) : 0;
+    touchCount = touches.length;
+  }
+
   canvas.addEventListener("touchstart", (e) => {
-    dragMoved = false;
-    touchStart = centre(e.touches);
-    last = touchStart;
-    pinch = e.touches.length >= 2 ? spread(e.touches) : 0;
+    // A gesture starts with the first finger. Later fingers must not restart
+    // it, or a pinch gets counted as a tap.
+    if (touchCount === 0) {
+      dragMoved = false;
+      touchStart = centre(e.touches);
+    }
+    reseed(e.touches);
+  }, { passive: true });
+
+  canvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+
+    // Finger count changed, so `last` describes a different gesture.
+    // Re-measure rather than subtracting incomparable positions, that jumped
+    // the map by half the finger separation when one finger left a pinch.
+    if (e.touches.length !== touchCount) {
+      reseed(e.touches);
+      return;
+    }
+
+    if (e.touches.length >= 2) {
+      const now = spread(e.touches);
+      const mid = centre(e.touches);
+      if (pinch > 0 && now > 0) {
+        const factor = now / pinch;
+        view.offsetX = mid.x - (mid.x - view.offsetX) * factor;
+        view.offsetY = mid.y - (mid.y - view.offsetY) * factor;
+        view.scale *= factor;
+      }
+      // Two fingers pan as well as zoom, by however far their midpoint went.
+      view.offsetX += mid.x - last.x;
+      view.offsetY += mid.y - last.y;
+      pinch = now;
+      last = mid;
+      dragMoved = true;
+      draw();
+      return;
+    }
+
+    const at = centre(e.touches);
+    view.offsetX += at.x - last.x;
+    view.offsetY += at.y - last.y;
+    last = at;
+    // A few pixels of slop, or every tap counts as a drag and never selects.
+    if (touchStart && Math.hypot(at.x - touchStart.x, at.y - touchStart.y) > 8) {
+      dragMoved = true;
+    }
+    draw();
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", (e) => {
+    // Fingers still down: the gesture continues in a new shape, so re-measure
+    // from what remains instead of carrying the old midpoint forward.
+    if (e.touches.length > 0) {
+      reseed(e.touches);
+      return;
+    }
+
+    reseed(e.touches);
+    if (dragMoved || !touchStart) return;
+
+    const found = nearest(touchStart.x, touchStart.y, 22);
+    if (found >= 0) {
+      selected = found;
+      // No cursor means no hover; showing the label for what was just tapped
+      // is the closest equivalent.
+      hover = found;
+      draw();
+      dioxus.send({ type: "select", track_id: ids[found] });
+    }
+  }, { passive: true });
+
+  // Android hands the gesture to the system mid-flight often enough that a
+  // missing handler here leaves `touchCount` stale until the next touchstart.
+  canvas.addEventListener("touchcancel", (e) => {
+    reseed(e.touches);
+    dragMoved = true;
   }, { passive: true });
 
   canvas.addEventListener("touchmove", (e) => {

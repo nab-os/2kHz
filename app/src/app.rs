@@ -622,10 +622,15 @@ fn Shell() -> Element {
                                 }
                             }
                         }
-                        if !terms.is_empty() && match_total == 0 {
-                            p { class: "muted", "Nothing matches. Every word has to appear somewhere." }
-                        }
-                        ul { class: "list",
+                        // Inside the list rather than beside it: an element
+                        // appearing above Generate would reintroduce the shift
+                        // the fixed height prevents.
+                        ul { class: "list in-space",
+                            if !terms.is_empty() && match_total == 0 {
+                                li { class: "row empty",
+                                    "Nothing matches. Every word has to appear somewhere."
+                                }
+                            }
                             for (id, artist, title) in matches {
                                 li {
                                     key: "{id}",

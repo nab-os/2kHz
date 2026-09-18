@@ -499,7 +499,7 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
 
   .shelf,
   .shelf .list,
-  .side .list,
+  .side .list:not(.in-space),
   .hidden-artists,
   .hidden-artists .list {
     overflow: visible;
@@ -507,6 +507,19 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
     flex: none;
     min-height: 0;
   }
+
+  /* One scroller has a cost: the hidden-artists block sits after the shelf in
+     the DOM, so with 500 favourites loaded it ended up ~24,000px down the
+     page rather than pinned to the bottom of the column as it is on desktop.
+     Sticky puts it back within reach. Collapsed it is a single heading, so it
+     costs one row of the list to keep it there. */
+  .hidden-artists {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    margin-top: 12px;
+  }
+  .hidden-artists.open { max-height: 40vh; overflow-y: auto; }
 
   /* ------------------------------------------------------ touch targets
      Rows and buttons are the whole interface here. 13px text with 5px of
@@ -549,14 +562,32 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
   }
 
   /* ------------------------------------------------------------ pipeline */
+  /* Flex, not grid. Two separate faults came out of keeping the grid here:
+     the desktop rule pins the log to a second column spanning two rows, which
+     on a one-column grid creates an implicit second column and drags the
+     whole view wider than the screen; and a height-constrained grid with a
+     `1fr` row will compress its `auto` rows below their content rather than
+     scroll, which is how four panels ended up drawn on top of each other. A
+     column of natural-height boxes in a scrolling parent has neither
+     failure mode. */
   .pipeline {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     overflow-y: auto;
   }
-  .pipeline .log-panel { grid-row: auto; grid-column: auto; min-height: 220px; }
+  .pipeline > .panel { flex: none; min-width: 0; }
+  .pipeline .log-panel { min-height: 220px; }
+  .pipeline .log-panel .log { min-height: 170px; }
 
-  .counts { gap: 10px 18px; }
+  /* A flex row that cannot wrap sets its container's min-content width. The
+     device form, a text input and three buttons, was doing exactly that,
+     which is the other half of why text was running off the right edge. */
+  .field { flex-wrap: wrap; }
+  .field .search { flex: 1 1 100%; min-width: 0; }
+
+  .counts { gap: 10px 16px; }
+  .counts > div { min-width: 0; }
   .count { font-size: 18px; }
 
   /* The blurb gets its own line instead of being ellipsised to nothing. */
@@ -570,11 +601,17 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
 /* Phones in portrait, where the map needs to be worth switching to. */
 @media (max-width: 560px) {
   .body.pane-map > .map-wrap { min-height: 60vh; }
+  .list.in-space { height: 38vh; }
 }
 
 /* ------------------------------------------------------- in-space search
    A clear button inside the field, so emptying a long query does not mean
-   selecting the text first. */
+   selecting the text first.
+
+   The list keeps one height rather than growing and shrinking with the
+   result count. It sits above Generate and Weights in a shared column, so a
+   list that resized on every keystroke dragged both panels up and down the
+   page while you were still typing. */
 .search-wrap { position: relative; display: flex; flex-direction: column; }
 .search-wrap .search { padding-right: 30px; }
 
@@ -597,3 +634,15 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
    "this is interactive" rather than the text caret a bare canvas gets. */
 #map { cursor: crosshair; }
 #map:active { cursor: grabbing; }
+
+.list.in-space {
+  height: 258px;
+  max-height: none;
+  overflow-y: auto;
+  flex: none;
+}
+.list.in-space .empty {
+  color: var(--muted);
+  padding: 6px 7px;
+  cursor: default;
+}
