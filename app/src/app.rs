@@ -65,6 +65,36 @@ pub async fn sync_and_load() -> anyhow::Result<()> {
     crate::init_engine(&data_dir, &db_path)
 }
 
+/// One of the three Explore panes. Only meaningful on a screen too narrow to
+/// hold all three.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pane {
+    Library,
+    Map,
+    Tools,
+}
+
+impl Pane {
+    const ALL: [Pane; 3] = [Pane::Library, Pane::Map, Pane::Tools];
+
+    /// Matches the `.pane-*` class the stylesheet keys off.
+    fn slug(self) -> &'static str {
+        match self {
+            Pane::Library => "library",
+            Pane::Map => "map",
+            Pane::Tools => "tools",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Pane::Library => "qobuz",
+            Pane::Map => "map",
+            Pane::Tools => "tools",
+        }
+    }
+}
+
 /// The root: either the app, or the screen that gets you to the app.
 ///
 /// Two components rather than an early return, Dioxus counts hooks per
@@ -215,6 +245,11 @@ fn Shell() -> Element {
     // window because they share the player and the database.
     let mut explore = use_signal(|| true);
 
+    // Which of the three Explore panes a narrow screen shows; ignored above
+    // the breakpoint. Opens on the Qobuz library, since a blank map reads as
+    // broken.
+    let mut pane = use_signal(|| Pane::Library);
+
     // A rebuilt space means the loaded one is stale. Remotely the bytes have
     // to come down first; `sync_space` is a no-op locally, so this stays one
     // path.
@@ -363,6 +398,22 @@ fn Shell() -> Element {
         }
     });
 
+    // Mirror the selection onto the map, it used to travel one way only,
+    // canvas outward.
+    use_effect(move || {
+        // Recorded as well as called: map.js is installed by a `use_future`,
+        // so for the first few hundred ms this does not exist yet and a bare
+        // call would be swallowed by the `&&`.
+        let script = format!(
+            "window.qsuggestSelected = {0};\n\
+             window.qsuggestSetSelected && window.qsuggestSetSelected({0});",
+            selected()
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "null".into())
+        );
+        document::eval(&script);
+    });
+
     // Push the generated route to the map. Ids only, which is what eval is
     // sized for.
     use_effect(move || {
@@ -397,23 +448,65 @@ fn Shell() -> Element {
         (visible, catalog.len() - visible)
     };
 
-    let matches: Vec<(i64, String, String)> = {
+    /// How many rows the in-space list will render at once.
+    const SHOWN: usize = 80;
+
+    // Every term must appear somewhere in artist, title or album, one
+    // substring over one field could not find "aphex window".
+    let terms: Vec<String> = query()
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+
+    let (matches, match_total) = {
         // Subscribe, so hiding an artist empties them out of this list too.
         blocked.read();
         let guard = engine().lock().unwrap();
         let catalog = &guard.navigator.catalog;
-        let needle = query().to_lowercase();
-        catalog
-            .visible()
-            .map(|i| catalog.get(i))
-            .filter(|t| {
-                needle.is_empty()
-                    || t.title.to_lowercase().contains(&needle)
-                    || t.artist.to_lowercase().contains(&needle)
-            })
-            .take(80)
-            .map(|t| (t.track_id, t.artist.clone(), t.title.clone()))
-            .collect()
+
+        if terms.is_empty() {
+            let rows: Vec<(i64, String, String)> = catalog
+                .visible()
+                .map(|i| catalog.get(i))
+                .take(SHOWN)
+                .map(|t| (t.track_id, t.artist.clone(), t.title.clone()))
+                .collect();
+            let total = catalog.visible().count();
+            (rows, total)
+        } else {
+            let first = &terms[0];
+            let mut found: Vec<(u8, i64, String, String)> = Vec::new();
+
+            for i in catalog.visible() {
+                let t = catalog.get(i);
+                let artist = t.artist.to_lowercase();
+                let title = t.title.to_lowercase();
+                let haystack = format!("{artist} {title} {}", t.album.to_lowercase());
+                if !terms.iter().all(|term| haystack.contains(term.as_str())) {
+                    continue;
+                }
+                // Something starting with what was typed is far likelier to
+                // be the thing meant than something merely containing it.
+                let rank = if artist.starts_with(first.as_str())
+                    || title.starts_with(first.as_str())
+                {
+                    0
+                } else {
+                    1
+                };
+                found.push((rank, t.track_id, t.artist.clone(), t.title.clone()));
+            }
+
+            let total = found.len();
+            found.sort_by_key(|row| row.0);
+            let rows = found
+                .into_iter()
+                .take(SHOWN)
+                .map(|(_, id, artist, title)| (id, artist, title))
+                .collect();
+            (rows, total)
+        }
     };
 
     let selected_label = selected()
@@ -428,6 +521,24 @@ fn Shell() -> Element {
                 .map(|t| format!("{} - {}", t.artist, t.title))
         })
         .unwrap_or_else(|| "nothing selected".into());
+
+    // Whether anything has moved off the values the space was built with.
+    // Drives the reset button, so it is never offered as a no-op.
+    let weights_changed = {
+        let defaults = engine().lock().unwrap().space.default_weights();
+        let current = weights();
+        defaults.iter().any(|(name, default)| {
+            current
+                .get(name)
+                .map_or(false, |value| (value - default).abs() > 1e-6)
+        })
+    };
+
+    let body_class = format!(
+        "body pane-{}{}",
+        pane().slug(),
+        if explore() { "" } else { " hidden" }
+    );
 
     rsx! {
         div { class: "app",
@@ -453,9 +564,26 @@ fn Shell() -> Element {
                 span { class: "muted", "{selected_label}" }
             }
 
+            // Narrow screens show one pane at a time. Here rather than a
+            // floating bar because they belong with the view tabs; CSS hides
+            // them once all three panes fit.
+            if explore() {
+                nav { class: "panes",
+                    for option in Pane::ALL {
+                        button {
+                            key: "{option.slug()}",
+                            class: if pane() == option { "tab active" } else { "tab" },
+                            onclick: move |_| pane.set(option),
+                            "{option.label()}"
+                        }
+                    }
+                }
+            }
+
             // Hidden, not unmounted: map.js holds a reference to the canvas,
-            // and remounting it would leave the map drawing into a dead node.
-            div { class: if explore() { "body" } else { "body hidden" },
+            // so remounting would leave it drawing into a dead node. The pane
+            // switcher is a class for the same reason.
+            div { class: "{body_class}",
                 LibraryPanel {}
 
                 div { class: "map-wrap",
@@ -465,12 +593,37 @@ fn Shell() -> Element {
                 aside { class: "side",
                     // ------------------------------------------------ browse
                     section { class: "panel",
-                        h2 { "In the space" }
-                        input {
-                            class: "search",
-                            placeholder: "search title or artist",
-                            value: "{query}",
-                            oninput: move |e| query.set(e.value()),
+                        h2 {
+                            "In the space"
+                            span { class: "spacer" }
+                            span { class: "muted",
+                                if terms.is_empty() {
+                                    "{match_total}"
+                                } else if match_total > matches.len() {
+                                    "{matches.len()} of {match_total}"
+                                } else {
+                                    "{match_total} found"
+                                }
+                            }
+                        }
+                        div { class: "search-wrap",
+                            input {
+                                class: "search",
+                                placeholder: "artist, title or album, any order",
+                                value: "{query}",
+                                oninput: move |e| query.set(e.value()),
+                            }
+                            if !query().is_empty() {
+                                button {
+                                    class: "clear-search",
+                                    title: "clear",
+                                    onclick: move |_| query.set(String::new()),
+                                    "×"
+                                }
+                            }
+                        }
+                        if !terms.is_empty() && match_total == 0 {
+                            p { class: "muted", "Nothing matches. Every word has to appear somewhere." }
                         }
                         ul { class: "list",
                             for (id, artist, title) in matches {
@@ -490,7 +643,22 @@ fn Shell() -> Element {
 
                     // ----------------------------------------------- weights
                     section { class: "panel",
-                        h2 { "Weights" }
+                        h2 {
+                            "Weights"
+                            span { class: "spacer" }
+                            button {
+                                class: "chip",
+                                title: "back to the weights the space was built with",
+                                disabled: !weights_changed,
+                                onclick: move |_| {
+                                    let defaults = engine().lock().unwrap().space.default_weights();
+                                    weights.set(defaults.clone());
+                                    let _ = engine().lock().unwrap().set_weights(&defaults);
+                                    generator.clear();
+                                },
+                                "reset"
+                            }
+                        }
                         p { class: "muted",
                             "Reshapes distances immediately. Map positions are fixed until the layout step is re-run."
                         }

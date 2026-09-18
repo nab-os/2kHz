@@ -20,6 +20,7 @@ body {
 .app {
   padding: 16px;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   /* Anchors the player's transient status line above the bar. */
@@ -45,6 +46,9 @@ header h1 { font-size: 16px; font-weight: 600; margin: 0; }
 }
 
 .panel h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -94,8 +98,17 @@ code {
   flex: none;
 }
 .chip.active { background: var(--accent); color: #12131a; }
-.row .chip { visibility: hidden; }
-.row:hover .chip { visibility: visible; }
+
+/* Reveal-on-hover is a pointer affordance, and a touch screen has no hover.
+   Left unguarded, every per-row control, hide, "in space", fetch, play,
+   is permanently invisible on a phone, which is a missing feature rather
+   than a cosmetic difference. Sticky :hover after a tap is the same bug seen
+   from the other side, so the row highlight is scoped too. */
+@media (hover: hover) and (pointer: fine) {
+  .row .chip { visibility: hidden; }
+  .row:hover .chip { visibility: visible; }
+  .row:hover { background: var(--row-hover); }
+}
 
 .crumb {
   display: flex;
@@ -108,6 +121,9 @@ code {
 .shelf { overflow-y: auto; flex: 1; min-height: 0; }
 
 .shelf-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -186,7 +202,6 @@ ol.list .row::before {
   border-radius: 5px;
   cursor: pointer;
 }
-.row:hover { background: var(--row-hover); }
 .row.selected { background: var(--accent); color: #12131a; }
 .row.selected .artist, .row.selected .muted { color: #12131a; }
 
@@ -300,9 +315,9 @@ button.danger:hover:not(:disabled) { background: #f7768e; color: #12131a; }
   margin-top: 8px;
   padding-top: 6px;
   flex: none;
-  max-height: 150px;
-  overflow-y: auto;
 }
+/* Only the expanded list needs a cap; collapsed it is one heading. */
+.hidden-artists.open { max-height: 190px; overflow-y: auto; }
 .hidden-artists .list { overflow-y: visible; }
 /* Always offer the way out, without needing to find the row first. */
 .hidden-artists .chip { visibility: visible; }
@@ -408,3 +423,177 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
 .setup .actions { margin-top: 1rem; }
 .setup .primary { padding: 0.7rem 1.4rem; font-size: 1rem; }
 .setup pre.log { white-space: pre-wrap; margin-top: 1rem; max-height: 16rem; }
+
+/* ============================================================== responsive
+   The desktop layout is three fixed columns: 360px of Qobuz, a flexible
+   map, 420px of space tools. That is 780px of furniture before the map gets
+   a pixel, so on a ~393px-wide phone the second and third columns simply sat
+   off-screen to the right.
+   
+   Rather than squeeze three columns into one, a narrow screen shows one pane
+   at a time and switches between them. Switching is a class on `.body`, not
+   a conditional render: map.js holds a reference to the canvas, so the map
+   must stay in the DOM even while it is not the visible pane. */
+
+/* The pane switcher only exists below the breakpoint. */
+.panes { display: none; }
+
+@media (max-width: 900px) {
+  .app {
+    padding: 10px;
+    /* Keep content clear of the notch and the gesture bar. */
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  /* The title was being squeezed to min-content by its siblings and wrapping
+     one word per line. Let the header wrap instead. */
+  header {
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 6px;
+    column-gap: 10px;
+    margin-bottom: 8px;
+  }
+  header h1 { font-size: 15px; white-space: nowrap; }
+  /* The selected track can be long; give it its own line rather than letting
+     it fight the tabs for room. */
+  header > span.muted:last-child { flex-basis: 100%; }
+  header .spacer { display: none; }
+
+  .panes {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    flex: none;
+  }
+  .panes .tab { flex: 1; padding: 9px 4px; }
+
+  /* One pane at a time. */
+  .body { flex-direction: column; gap: 0; }
+  .body > .library,
+  .body > .map-wrap,
+  .body > .side {
+    display: none;
+    width: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .body.pane-library > .library { display: flex; }
+  .body.pane-map > .map-wrap { display: block; }
+  .body.pane-tools > .side { display: flex; }
+
+  /* ------------------------------------------------- one scroller per pane
+     The desktop layout nests scroll regions: the shelf scrolls inside the
+     panel, the hidden-artists box scrolls inside that, each list scrolls
+     inside the shelf. On a touch screen nested scrollers are a coin flip
+     over which one moves, and worse, the boxes fight for a column that is
+     now 400px tall rather than 900, with 115 hidden artists claiming a
+     fixed 150px, the track list was squeezed down to a single visible row.
+
+     So on mobile each pane is one scroller and everything inside it takes
+     its natural height. */
+  .body > .library,
+  .body > .side { overflow-y: auto; }
+
+  .shelf,
+  .shelf .list,
+  .side .list,
+  .hidden-artists,
+  .hidden-artists .list {
+    overflow: visible;
+    max-height: none;
+    flex: none;
+    min-height: 0;
+  }
+
+  /* ------------------------------------------------------ touch targets
+     Rows and buttons are the whole interface here. 13px text with 5px of
+     padding is a ~30px target; these bring the things you actually tap up
+     to something a thumb can hit. */
+  .row { padding: 10px 8px; gap: 10px; }
+  .tab { padding: 9px 6px; }
+  button { padding: 9px 12px; }
+  .chip { padding: 7px 10px; font-size: 12px; }
+  .transport button { padding: 10px 16px; font-size: 16px; }
+
+  /* 16px stops the webview zooming the page when a field takes focus. */
+  .search { font-size: 16px; padding: 10px; }
+  .search-wrap .search { padding-right: 40px; }
+  .clear-search { height: 42px; width: 38px; font-size: 20px; }
+
+  /* Sliders are the fiddliest thing on a touch screen; give the thumb room. */
+  .slider { grid-template-columns: 64px 1fr 32px; }
+  .slider input { height: 28px; }
+
+  /* ---------------------------------------------------------- player bar */
+  .player {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: 8px 10px;
+    margin-top: 8px;
+  }
+  /* Title and seek take a full row above the controls. */
+  .now { order: 1; flex-basis: 100%; }
+  .transport { order: 2; }
+  .player-meta { order: 3; margin-left: auto; }
+  .now-title .title { max-width: 100%; }
+  .seek input { height: 28px; }
+
+  /* Absolute positioning put this over the transport on a narrow bar. */
+  .player-status {
+    position: static;
+    order: 4;
+    flex-basis: 100%;
+  }
+
+  /* ------------------------------------------------------------ pipeline */
+  .pipeline {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+    overflow-y: auto;
+  }
+  .pipeline .log-panel { grid-row: auto; grid-column: auto; min-height: 220px; }
+
+  .counts { gap: 10px 18px; }
+  .count { font-size: 18px; }
+
+  /* The blurb gets its own line instead of being ellipsised to nothing. */
+  .stage { grid-template-columns: 1fr auto; gap: 4px 10px; padding: 10px 8px; }
+  .stage-blurb { grid-column: 1 / -1; white-space: normal; }
+
+  /* An artist name and a title on one 393px line leaves room for neither. */
+  .artist { min-width: 30%; }
+}
+
+/* Phones in portrait, where the map needs to be worth switching to. */
+@media (max-width: 560px) {
+  .body.pane-map > .map-wrap { min-height: 60vh; }
+}
+
+/* ------------------------------------------------------- in-space search
+   A clear button inside the field, so emptying a long query does not mean
+   selecting the text first. */
+.search-wrap { position: relative; display: flex; flex-direction: column; }
+.search-wrap .search { padding-right: 30px; }
+
+.clear-search {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 30px;
+  width: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+  border-radius: 0 6px 6px 0;
+}
+.clear-search:hover:not(:disabled) { background: transparent; color: var(--text); }
+
+/* The map names what you point at, so the canvas wants a pointer that says
+   "this is interactive" rather than the text caret a bare canvas gets. */
+#map { cursor: crosshair; }
+#map:active { cursor: grabbing; }

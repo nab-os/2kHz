@@ -35,16 +35,31 @@ fn main() {
     #[cfg(feature = "mobile")]
     dioxus::launch(qsuggest::app::App);
 
-    // Three columns plus a map need room; the default window is too small to
-    // show them without the panels collapsing.
+    // Three columns plus a map need room; the default window collapses them.
+    // QSUGGEST_WINDOW=WxH overrides it, mostly to check the responsive layout
+    // at phone width without a phone.
     #[cfg(not(feature = "mobile"))]
-    dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            dioxus::desktop::Config::new().with_window(
-                dioxus::desktop::WindowBuilder::new()
-                    .with_title("Qobuz suggestion space")
-                    .with_inner_size(dioxus::desktop::LogicalSize::new(1500.0, 950.0)),
-            ),
-        )
-        .launch(qsuggest::app::App);
+    {
+        let (width, height) = window_size();
+        dioxus::LaunchBuilder::desktop()
+            .with_cfg(
+                dioxus::desktop::Config::new().with_window(
+                    dioxus::desktop::WindowBuilder::new()
+                        .with_title("Qobuz suggestion space")
+                        .with_inner_size(dioxus::desktop::LogicalSize::new(width, height)),
+                ),
+            )
+            .launch(qsuggest::app::App);
+    }
+}
+
+#[cfg(not(feature = "mobile"))]
+fn window_size() -> (f64, f64) {
+    std::env::var("QSUGGEST_WINDOW")
+        .ok()
+        .and_then(|spec| {
+            let (w, h) = spec.split_once(['x', 'X'])?;
+            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+        })
+        .unwrap_or((1500.0, 950.0))
 }

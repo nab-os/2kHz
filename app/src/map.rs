@@ -13,6 +13,10 @@ pub struct MapMeta {
     pub n: usize,
     /// Distinct genre names, indexed by the genre array in the binary payload.
     pub genres: Vec<String>,
+    /// "Artist - Title" per point, in payload order. Sent with the metadata
+    /// rather than fetched per hover, a tooltip that round-trips to Rust
+    /// flickers. ~570KB for a 14k corpus, parsed once.
+    pub labels: Vec<String>,
     pub bounds: Bounds,
     /// False when the layout step has not been run yet.
     pub has_layout: bool,
@@ -47,6 +51,18 @@ pub fn meta(catalog: &Catalog) -> MapMeta {
         });
     }
 
+    let labels: Vec<String> = indices
+        .iter()
+        .map(|&i| {
+            let track = catalog.get(i);
+            if track.artist.is_empty() {
+                track.title.clone()
+            } else {
+                format!("{} - {}", track.artist, track.title)
+            }
+        })
+        .collect();
+
     let mut bounds = Bounds {
         min_x: f32::INFINITY,
         max_x: f32::NEG_INFINITY,
@@ -68,6 +84,7 @@ pub fn meta(catalog: &Catalog) -> MapMeta {
     MapMeta {
         n: indices.len(),
         genres,
+        labels,
         bounds,
         has_layout: !indices.is_empty(),
     }

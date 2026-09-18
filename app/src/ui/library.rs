@@ -376,13 +376,26 @@ fn HiddenArtists() -> Element {
     let blocklist = use_context::<Blocklist>();
     let hidden = blocklist.artists.read().clone();
 
+    // Collapsed by default: this list grows without bound, 115 entries on a
+    // well-used corpus, and at a fixed height took a third of the column.
+    let mut open = use_signal(|| false);
+
     if hidden.is_empty() {
         return rsx! {};
     }
 
     rsx! {
-        div { class: "hidden-artists",
-            h3 { class: "shelf-head", "Hidden ({hidden.len()})" }
+        div { class: if open() { "hidden-artists open" } else { "hidden-artists" },
+            h3 { class: "shelf-head",
+                "Hidden ({hidden.len()})"
+                span { class: "spacer" }
+                button {
+                    class: "chip",
+                    onclick: move |_| { let next = !open(); open.set(next); },
+                    if open() { "hide list" } else { "show" }
+                }
+            }
+            if open() {
             ul { class: "list",
                 for entry in hidden {
                     li { key: "{entry.artist_id}", class: "row",
@@ -397,6 +410,7 @@ fn HiddenArtists() -> Element {
                         }
                     }
                 }
+            }
             }
         }
     }
