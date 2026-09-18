@@ -1,5 +1,5 @@
 [app]
-name = "qsuggest"
-stylized-name = "QSuggest"
-identifier = "fr.glargh.qsuggest"
+name = "two_khz"
+stylized-name = "2kHz"
+identifier = "fr.glargh.twokhz"
 template-pack = "dioxus"

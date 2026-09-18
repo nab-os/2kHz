@@ -6,8 +6,8 @@
 //! Writes the same tables, so either can resume what the other started.
 
 use anyhow::{Context, Result};
-use qsuggest::crawl;
-use qsuggest::qobuz::{QobuzClient, DEFAULT_RATE_PER_SEC};
+use two_khz::crawl;
+use two_khz::qobuz::{QobuzClient, DEFAULT_RATE_PER_SEC};
 
 struct Options {
     max_tracks: i64,
@@ -79,13 +79,13 @@ fn parse_args() -> Result<Options> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let options = parse_args()?;
-    let db_path = qsuggest::default_db_path();
+    let db_path = two_khz::default_db_path();
 
     // Creates the tables if this is a fresh checkout: the crawler writes them,
     // so it must not depend on a Python command having run first.
-    let conn = qsuggest::db::open_for_write(&db_path)?;
+    let conn = two_khz::db::open_for_write(&db_path)?;
 
-    let mut client = QobuzClient::from_repo(&qsuggest::qobuz::repo_root())?.with_rate(options.rate);
+    let mut client = QobuzClient::from_repo(&two_khz::qobuz::repo_root())?.with_rate(options.rate);
     client.login().await.context("signing in to Qobuz")?;
 
     // Targeted fetches: what the app's "analyse" button runs.

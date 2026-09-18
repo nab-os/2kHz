@@ -553,6 +553,8 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
   .player-meta { order: 3; margin-left: auto; }
   .now-title .title { max-width: 100%; }
   .seek input { height: 28px; }
+  .volume input { width: 96px; height: 28px; }
+  .volume .chip { padding: 7px 9px; font-size: 15px; }
 
   /* Absolute positioning put this over the transport on a narrow bar. */
   .player-status {
@@ -646,3 +648,10 @@ button.primary:hover:not(:disabled) { background: #8fb3ff; }
   padding: 6px 7px;
   cursor: default;
 }
+
+/* ---------------------------------------------------------------- volume
+   Independent of the device's own level, so the phone's hardware keys still
+   do what they always did and this trims within that. */
+.volume { display: flex; align-items: center; gap: 6px; flex: none; }
+.volume .chip { padding: 2px 6px; font-size: 13px; line-height: 1.2; }
+.volume input { width: 82px; }

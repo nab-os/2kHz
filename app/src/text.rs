@@ -2,7 +2,7 @@
 //!
 //! Only the text tower is shipped, the audio tower runs during analysis.
 //! Requires `data/clap_text.onnx` and `data/clap_tokenizer.json`, from
-//! `uv run python -m qsuggest.features.onnx_export`.
+//! `uv run python -m two_khz.features.onnx_export`.
 
 use anyhow::{Context, Result};
 use ort::session::Session;

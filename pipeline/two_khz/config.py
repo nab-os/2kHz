@@ -12,9 +12,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Overridable so tests and experiments cannot clobber a real corpus.
-DATA_DIR = Path(os.environ.get("QSUGGEST_DATA_DIR") or REPO_ROOT / "data")
-CACHE_DIR = Path(os.environ.get("QSUGGEST_CACHE_DIR") or REPO_ROOT / "cache" / "audio")
-DB_PATH = DATA_DIR / "qsuggest.db"
+DATA_DIR = Path(os.environ.get("TWO_KHZ_DATA_DIR") or REPO_ROOT / "data")
+CACHE_DIR = Path(os.environ.get("TWO_KHZ_CACHE_DIR") or REPO_ROOT / "cache" / "audio")
+DB_PATH = DATA_DIR / "two_khz.db"
 SPACE_BIN = DATA_DIR / "space.bin"
 SPACE_JSON = DATA_DIR / "space.json"
 TOKEN_CACHE = DATA_DIR / ".token.json"

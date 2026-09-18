@@ -1,6 +1,6 @@
 //! Navigation: neighbours, paths, drift, radio.
 //!
-//! Mirrors `pipeline/qsuggest/paths.py`, which is the oracle the `parity`
+//! Mirrors `pipeline/two_khz/paths.py`, which is the oracle the `parity`
 //! binary compares against.
 
 use crate::db::{Catalog, TrackMeta};

@@ -7,7 +7,7 @@ weight in the app.
 The tokenizer is exported alongside, since the Rust side has to reproduce the
 exact same token ids for the embedding to land in the right place.
 
-  uv run python -m qsuggest.features.onnx_export
+  uv run python -m two_khz.features.onnx_export
 """
 
 from __future__ import annotations

@@ -21,13 +21,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-_WORKDIR = Path(tempfile.mkdtemp(prefix="qsuggest-parity-"))
-os.environ["QSUGGEST_DATA_DIR"] = str(_WORKDIR / "data")
-os.environ["QSUGGEST_CACHE_DIR"] = str(_WORKDIR / "cache")
+_WORKDIR = Path(tempfile.mkdtemp(prefix="two-khz-parity-"))
+os.environ["TWO_KHZ_DATA_DIR"] = str(_WORKDIR / "data")
+os.environ["TWO_KHZ_CACHE_DIR"] = str(_WORKDIR / "cache")
 
 import synthetic  # noqa: E402
 
-from qsuggest import paths  # noqa: E402
+from two_khz import paths  # noqa: E402
 
 APP_DIR = Path(__file__).resolve().parents[2] / "app"
 
@@ -96,8 +96,8 @@ def main() -> int:
 
     # Text steering: exercises the ONNX export too, since Rust embeds the phrase
     # with the exported graph while Python uses the original torch model.
-    from qsuggest.features.clap_ext import ClapExtractor
-    from qsuggest.features import models as feature_models
+    from two_khz.features.clap_ext import ClapExtractor
+    from two_khz.features import models as feature_models
 
     if (feature_models.MODEL_DIR / "clap_text.onnx").is_file():
         clap = ClapExtractor()

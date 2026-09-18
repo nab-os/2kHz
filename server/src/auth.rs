@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use qsuggest::api::{Device, PairingGrant, Scope};
+use two_khz::api::{Device, PairingGrant, Scope};
 use rand::Rng;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -61,7 +61,7 @@ impl AuthStore {
         let mut raw = [0u8; TOKEN_BYTES];
         rand::rng().fill(&mut raw);
         let token = hex(&raw);
-        let now = qsuggest::db::utc_now();
+        let now = two_khz::db::utc_now();
 
         let conn = self.open()?;
         conn.execute(
@@ -110,7 +110,7 @@ impl AuthStore {
 
         let _ = conn.execute(
             "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
-            rusqlite::params![qsuggest::db::utc_now(), device.id],
+            rusqlite::params![two_khz::db::utc_now(), device.id],
         );
 
         Some(device)
@@ -182,7 +182,7 @@ fn bearer(parts: &Parts) -> Option<String> {
 fn authorise(parts: &Parts, state: &crate::AppState, needed: Scope) -> Result<Device, crate::Failure> {
     let Some(token) = bearer(parts) else {
         return Err(crate::Failure::unauthorised(
-            "no bearer token; pair this device with `qsuggest-server pair`",
+            "no bearer token; pair this device with `two-khz-server pair`",
         ));
     };
     let Some(device) = state.auth.verify(&token) else {

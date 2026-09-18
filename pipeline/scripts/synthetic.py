@@ -4,7 +4,7 @@ Builds fake "albums" with deliberately distinct musical character, analyses them
 with the real extractors, and assembles the real space. Used by the smoke test
 and the Rust/Python parity test, so neither needs Qobuz credentials.
 
-Callers must set QSUGGEST_DATA_DIR before importing qsuggest.
+Callers must set TWO_KHZ_DATA_DIR before importing two_khz.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ def write_audio(audio_dir: Path) -> list[tuple[int, str, int, str]]:
 
 
 def populate_db(conn, entries) -> None:
-    from qsuggest import crawl
+    from two_khz import crawl
 
     for album_index, (album_name, *_rest) in enumerate(ALBUMS):
         artist = {"id": 100 + album_index, "name": f"Artist {album_index}"}
@@ -104,8 +104,8 @@ def populate_db(conn, entries) -> None:
 
 
 def analyse(conn, entries, audio_dir: Path, verbose: bool = True) -> None:
-    from qsuggest import analyse as analyse_mod
-    from qsuggest.features import clap_ext, essentia_ext
+    from two_khz import analyse as analyse_mod
+    from two_khz.features import clap_ext, essentia_ext
 
     essentia = essentia_ext.EssentiaExtractor()
     clap = clap_ext.ClapExtractor()
@@ -120,14 +120,14 @@ def analyse(conn, entries, audio_dir: Path, verbose: bool = True) -> None:
 
 def prepare(workdir: Path, verbose: bool = True):
     """Build the whole fixture. Returns (conn, entries, manifest)."""
-    from qsuggest import db, space
+    from two_khz import db, space
 
     audio_dir = workdir / "audio"
     if verbose:
         print(f"synthesising {len(ALBUMS) * TRACKS_PER_ALBUM} tracks ...")
     entries = write_audio(audio_dir)
 
-    conn = db.connect(workdir / "data" / "qsuggest.db")
+    conn = db.connect(workdir / "data" / "two_khz.db")
     populate_db(conn, entries)
 
     if verbose:

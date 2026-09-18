@@ -65,7 +65,7 @@ pub fn open_for_write(db_path: &Path) -> Result<Connection> {
 }
 
 /// Artists the user has blocked. Written by either half; see
-/// `pipeline/qsuggest/blocklist.py` for what the pipeline does with it.
+/// `pipeline/two_khz/blocklist.py` for what the pipeline does with it.
 fn load_blocked(conn: &Connection) -> Result<HashSet<i64>> {
     let mut statement = conn.prepare("SELECT artist_id FROM blocked_artists")?;
     let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;

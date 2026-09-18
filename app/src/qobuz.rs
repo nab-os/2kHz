@@ -4,7 +4,7 @@
 //! The pipeline has its own Python client for bulk work. The duplication is
 //! deliberate, they overlap only on signing and auth.
 //!
-//! Mirrors `pipeline/qsuggest/qobuz.py`, including the signing scheme.
+//! Mirrors `pipeline/two_khz/qobuz.py`, including the signing scheme.
 
 use anyhow::{bail, Context, Result};
 use md5::{Digest, Md5};
@@ -884,7 +884,7 @@ impl QobuzClient {
 
         bail!(
             "no configured app secret produced a valid signature (it may have rotated). \
-             Run `qsuggest refresh-credentials --write`. Last error: {last_error}"
+             Run `two_khz refresh-credentials --write`. Last error: {last_error}"
         )
     }
 

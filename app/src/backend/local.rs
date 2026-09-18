@@ -158,7 +158,7 @@ impl Local {
         let mut guard = self.encoder().await;
         let encoder = guard.as_mut().ok_or_else(|| {
             anyhow::anyhow!(
-                "text steering needs {}/{}; run: uv run python -m qsuggest.features.onnx_export",
+                "text steering needs {}/{}; run: uv run python -m two_khz.features.onnx_export",
                 self.model_dir.display(),
                 crate::text::ONNX_NAME
             )
@@ -248,7 +248,7 @@ impl Local {
         };
 
         std::thread::Builder::new()
-            .name("qsuggest-crawl".into())
+            .name("two-khz-crawl".into())
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -311,7 +311,7 @@ impl Local {
             while let Some(stage) = current {
                 *job.running.lock().unwrap() = Some(stage);
                 log.push(format!(
-                    "$ uv run qsuggest {}",
+                    "$ uv run two-khz {}",
                     stage.command().unwrap_or("")
                 ));
 
@@ -387,15 +387,15 @@ impl Local {
     // ------------------------------------------------------------ devices
 
     pub async fn devices(&self) -> Result<Vec<Device>> {
-        anyhow::bail!("device pairing needs a server; run qsuggest-server and connect to it")
+        anyhow::bail!("device pairing needs a server; run two-khz-server and connect to it")
     }
 
     pub async fn pair_device(&self, _name: &str, _scope: Scope) -> Result<PairingGrant> {
-        anyhow::bail!("device pairing needs a server; run qsuggest-server and connect to it")
+        anyhow::bail!("device pairing needs a server; run two-khz-server and connect to it")
     }
 
     pub async fn revoke_device(&self, _device_id: i64) -> Result<()> {
-        anyhow::bail!("device pairing needs a server; run qsuggest-server and connect to it")
+        anyhow::bail!("device pairing needs a server; run two-khz-server and connect to it")
     }
 }
 

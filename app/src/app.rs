@@ -176,7 +176,7 @@ fn Setup(ready: Signal<bool>) -> Element {
             p { class: "muted",
                 "This device navigates the space on its own, but the catalogue, playback and \
                  the pipeline live on a machine that can host them. Pair one with "
-                code { "qsuggest-server pair --name phone --scope play" }
+                code { "two-khz-server pair --name phone --scope play" }
                 "."
             }
 
@@ -228,6 +228,8 @@ fn Shell() -> Element {
         position: Signal::new((0.0, 0.0)),
         quality: Signal::new(FORMAT_MP3_320),
         status: Signal::new(None),
+        volume: Signal::new(1.0),
+        muted: Signal::new(false),
     });
 
     let library = use_context_provider(Library::new);
@@ -264,7 +266,7 @@ fn Shell() -> Element {
                             selected.set(None);
                             generator.clear();
                             document::eval(
-                                "window.qsuggestReloadPoints && window.qsuggestReloadPoints();",
+                                "window.twoKhzReloadPoints && window.twoKhzReloadPoints();",
                             );
                         }
                         Err(err) => eprintln!("could not reload the rebuilt space: {err:#}"),
@@ -321,7 +323,7 @@ fn Shell() -> Element {
                     .set_blocked(found.iter().map(|a| a.artist_id).collect());
                 blocked.set(found);
             }
-            document::eval("window.qsuggestReloadPoints && window.qsuggestReloadPoints();");
+            document::eval("window.twoKhzReloadPoints && window.twoKhzReloadPoints();");
         });
     });
 
@@ -339,7 +341,7 @@ fn Shell() -> Element {
                     .set_blocked(found.iter().map(|a| a.artist_id).collect());
                 blocked.set(found);
             }
-            document::eval("window.qsuggestReloadPoints && window.qsuggestReloadPoints();");
+            document::eval("window.twoKhzReloadPoints && window.twoKhzReloadPoints();");
         });
     });
 
@@ -405,8 +407,8 @@ fn Shell() -> Element {
         // so for the first few hundred ms this does not exist yet and a bare
         // call would be swallowed by the `&&`.
         let script = format!(
-            "window.qsuggestSelected = {0};\n\
-             window.qsuggestSetSelected && window.qsuggestSetSelected({0});",
+            "window.twoKhzSelected = {0};\n\
+             window.twoKhzSetSelected && window.twoKhzSetSelected({0});",
             selected()
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "null".into())
@@ -424,7 +426,7 @@ fn Shell() -> Element {
             .map(|s| s.track.track_id)
             .collect();
         let script = format!(
-            "window.qsuggestSetRoute && window.qsuggestSetRoute({});",
+            "window.twoKhzSetRoute && window.twoKhzSetRoute({});",
             serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into())
         );
         document::eval(&script);
@@ -543,7 +545,7 @@ fn Shell() -> Element {
     rsx! {
         div { class: "app",
             header {
-                h1 { "Qobuz suggestion space" }
+                h1 { "2kHz" }
                 span { class: "muted", "{total_tracks} tracks" }
                 if hidden_tracks > 0 {
                     span { class: "muted", "({hidden_tracks} hidden)" }

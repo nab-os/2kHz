@@ -66,7 +66,7 @@
     if (!meta.has_layout) {
       ctx.fillStyle = "#8b90a3";
       ctx.font = "13px system-ui, sans-serif";
-      ctx.fillText("No layout yet, run: uv run qsuggest layout", 20, 30);
+      ctx.fillText("No layout yet, run: uv run two-khz layout", 20, 30);
       return;
     }
 
@@ -435,7 +435,7 @@
 
   // Rust calls this when the selection changes elsewhere, the in-space list,
   // an "in space" button, a generated route.
-  window.qsuggestSetSelected = (trackId) => {
+  window.twoKhzSetSelected = (trackId) => {
     if (trackId === null || trackId === undefined) {
       selected = -1;
       draw();
@@ -467,7 +467,7 @@
   };
 
   // Rust calls this when a path is built. Ids only, tiny payload.
-  window.qsuggestSetRoute = (trackIds) => {
+  window.twoKhzSetRoute = (trackIds) => {
     const position = new Map();
     for (let i = 0; i < n; i++) position.set(ids[i], i);
     route = trackIds.map((id) => position.get(id)).filter((i) => i !== undefined);
@@ -477,7 +477,7 @@
 
   // Rust calls this after the block list changes. Selection and route are
   // dropped: their indices referred to the old point set.
-  window.qsuggestReloadPoints = async () => {
+  window.twoKhzReloadPoints = async () => {
     await loadPoints();
     selected = -1;
     hover = -1;
@@ -486,8 +486,8 @@
     draw();
     // The indices changed, but the track id did not; re-resolve it rather
     // than leaving the map unmarked after every rebuild.
-    const wanted = window.qsuggestSelected;
-    if (wanted !== undefined && wanted !== null) window.qsuggestSetSelected(wanted);
+    const wanted = window.twoKhzSelected;
+    if (wanted !== undefined && wanted !== null) window.twoKhzSetSelected(wanted);
   };
 
   window.addEventListener("resize", resize);
@@ -515,9 +515,9 @@
   // Rust may have chosen a track before this file finished loading; it leaves
   // the id here for exactly that case.
   function applyPendingSelection() {
-    const wanted = window.qsuggestSelected;
+    const wanted = window.twoKhzSelected;
     if (wanted !== undefined && wanted !== null) {
-      window.qsuggestSetSelected(wanted);
+      window.twoKhzSetSelected(wanted);
     }
   }
   applyPendingSelection();

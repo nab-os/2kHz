@@ -172,7 +172,7 @@ def build(
     weights = {**DEFAULT_WEIGHTS, **(weights or {})}
     rows = load_rows(conn)
     if not rows:
-        raise RuntimeError("no analysed tracks; run `qsuggest analyse` first")
+        raise RuntimeError("no analysed tracks; run `two_khz analyse` first")
 
     n = len(rows)
     descriptors = [r["descriptors"] for r in rows]

@@ -96,7 +96,7 @@ class QobuzClient:
         self._working_secret: str | None = None
         self._limiter = _RateLimiter(rate_per_sec)
         self._session = requests.Session()
-        self._session.headers.update({"X-App-Id": app_id, "User-Agent": "qsuggest/0.1"})
+        self._session.headers.update({"X-App-Id": app_id, "User-Agent": "two_khz/0.1"})
 
     # ---------------------------------------------------------------- factory
 
@@ -372,6 +372,6 @@ class QobuzClient:
         raise config.ConfigError(
             "None of the configured app secrets produced a valid signature. "
             "The secret may have rotated; re-scrape it with "
-            "`qsuggest refresh-credentials --write`.\n"
+            "`two_khz refresh-credentials --write`.\n"
             f"Last error: {last_error}"
         )

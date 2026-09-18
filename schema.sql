@@ -1,6 +1,6 @@
--- Schema for qsuggest.db, the contract between the two halves of the system.
+-- Schema for two_khz.db, the contract between the two halves of the system.
 --
--- Executed by both: `pipeline/qsuggest/db.py` on connect, and
+-- Executed by both: `pipeline/two_khz/db.py` on connect, and
 -- `app/src/db.rs::ensure_schema`, which embeds this file at compile time.
 --
 -- Add columns rather than renaming them, and give each new one an entry in

@@ -20,16 +20,16 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Redirect the data dir before importing qsuggest, so this never touches a real
+# Redirect the data dir before importing two_khz, so this never touches a real
 # corpus. Model weights live outside DATA_DIR and are still shared.
-_WORKDIR = Path(tempfile.mkdtemp(prefix="qsuggest-smoke-"))
-os.environ["QSUGGEST_DATA_DIR"] = str(_WORKDIR / "data")
-os.environ["QSUGGEST_CACHE_DIR"] = str(_WORKDIR / "cache")
+_WORKDIR = Path(tempfile.mkdtemp(prefix="two-khz-smoke-"))
+os.environ["TWO_KHZ_DATA_DIR"] = str(_WORKDIR / "data")
+os.environ["TWO_KHZ_CACHE_DIR"] = str(_WORKDIR / "cache")
 
 import synthetic  # noqa: E402
 
-from qsuggest import paths, space  # noqa: E402
-from qsuggest.features import clap_ext  # noqa: E402
+from two_khz import paths, space  # noqa: E402
+from two_khz.features import clap_ext  # noqa: E402
 
 
 def album_indices(nav: paths.Navigator, album_index: int) -> list[int]:

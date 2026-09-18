@@ -6,8 +6,8 @@
 //!   cargo run --bin parity -- interpolate 1001 1017 8
 
 use anyhow::{bail, Result};
-use qsuggest::paths::Constraints;
-use qsuggest::{default_data_dir, default_db_path, Engine};
+use two_khz::paths::Constraints;
+use two_khz::{default_data_dir, default_db_path, Engine};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -92,11 +92,11 @@ fn main() -> Result<()> {
 }
 
 /// The CLAP text tower, straight off disk.
-fn text_encoder() -> anyhow::Result<qsuggest::text::TextEncoder> {
-    let dir = qsuggest::default_model_dir();
-    qsuggest::text::TextEncoder::load(&dir)?.ok_or_else(|| {
+fn text_encoder() -> anyhow::Result<two_khz::text::TextEncoder> {
+    let dir = two_khz::default_model_dir();
+    two_khz::text::TextEncoder::load(&dir)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "no text encoder in {}; run: uv run python -m qsuggest.features.onnx_export",
+            "no text encoder in {}; run: uv run python -m two_khz.features.onnx_export",
             dir.display()
         )
     })

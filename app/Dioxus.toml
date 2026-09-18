@@ -3,11 +3,11 @@
 # Android is built with `dx`, not the cargo-mobile2 scaffolding in gen/,
 # dioxus-desktop exports its own JNI trampoline. See src/lib.rs.
 [application]
-name = "qsuggest"
+name = "two_khz"
 
 [web.app]
-title = "Qobuz suggestion space"
+title = "2kHz"
 
 [bundle]
-identifier = "fr.glargh.qsuggest"
-publisher = "qsuggest"
+identifier = "fr.glargh.twokhz"
+publisher = "two_khz"

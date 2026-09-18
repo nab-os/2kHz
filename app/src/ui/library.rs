@@ -199,7 +199,7 @@ fn request_analysis(library: Library, kind: &str, id: &str, label: &str) {
             Ok(count) => {
                 let what = if kind == "artist" { "albums queued" } else { "tracks" };
                 library.notice.set(Some(format!(
-                    "{label}: {count} {what}. Run `uv run qsuggest analyse` to extract features."
+                    "{label}: {count} {what}. Run `uv run two-khz analyse` to extract features."
                 )));
             }
             Err(err) => library.notice.set(Some(format!("{err:#}"))),

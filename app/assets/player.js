@@ -13,23 +13,23 @@
   }
   if (!audio) return;
 
-  window.qsuggestPlayUrl = (url) => {
+  window.twoKhzPlayUrl = (url) => {
     audio.src = url;
     // A previous track's position survives a src swap in some webviews.
     audio.currentTime = 0;
     audio.play().catch(() => {});
   };
-  window.qsuggestResume = () => audio.play().catch(() => {});
-  window.qsuggestPause = () => audio.pause();
-  window.qsuggestStop = () => {
+  window.twoKhzResume = () => audio.play().catch(() => {});
+  window.twoKhzPause = () => audio.pause();
+  window.twoKhzStop = () => {
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
   };
-  window.qsuggestSeek = (fraction) => {
+  window.twoKhzSeek = (fraction) => {
     if (Number.isFinite(audio.duration)) audio.currentTime = fraction * audio.duration;
   };
-  window.qsuggestVolume = (value) => {
+  window.twoKhzVolume = (value) => {
     audio.volume = Math.max(0, Math.min(1, value));
   };
 

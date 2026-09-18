@@ -1,6 +1,6 @@
 //! The slim catalogue clients sync.
 //!
-//! `qsuggest.db` is 269MB, almost none of it read at query time. This projects
+//! `two_khz.db` is 269MB, almost none of it read at query time. This projects
 //! out what navigation needs: the metadata minus every `qobuz_json` blob,
 //! `layout`, `blocked_artists`, and `features` reduced to the CLAP embedding
 //! plus a one-field `essentia_json` carrying only the BPM.
@@ -20,7 +20,7 @@ pub fn build(source: &Path, target: &Path) -> Result<u64> {
     // The source may be a database nothing has crawled into yet. Both halves
     // create the shared schema on connect for this reason, so do the same
     // rather than failing with "no such table: artists".
-    qsuggest::db::ensure_schema(
+    two_khz::db::ensure_schema(
         &Connection::open(source)
             .with_context(|| format!("opening {}", source.display()))?,
     )?;
@@ -39,9 +39,9 @@ pub fn build(source: &Path, target: &Path) -> Result<u64> {
     // 16KB seven fit, and 63MB becomes 35MB.
     conn.pragma_update(None, "page_size", 16384)?;
 
-    // The shared schema, so the slim copy is still a qsuggest database and
+    // The shared schema, so the slim copy is still a two_khz database and
     // `Catalog::load` needs no special case for it.
-    qsuggest::db::ensure_schema(&conn)?;
+    two_khz::db::ensure_schema(&conn)?;
 
     conn.execute("ATTACH DATABASE ?1 AS src", [source.to_string_lossy()])
         .with_context(|| format!("attaching {}", source.display()))?;

@@ -74,9 +74,9 @@ and CLAP a torch model and neither likes being driven from several threads.
 Only the main process writes to SQLite.
 
 ```sh
-uv run qsuggest analyse                        # one worker per 4 hardware threads
-uv run qsuggest analyse --workers 12           # override
-uv run qsuggest analyse --download-workers 16  # if fetching is the laggard
+uv run two-khz analyse                        # one worker per 4 hardware threads
+uv run two-khz analyse --workers 12           # override
+uv run two-khz analyse --download-workers 16  # if fetching is the laggard
 ```
 
 Measured on a 32-thread Ryzen 9 9950X3D: **900 → 4,700 tracks/hour**. Past that

@@ -4,10 +4,10 @@
 //! has no `main` of its own: dioxus-desktop's JNI trampoline dlsym's this one.
 
 fn main() {
-    // Local unless QSUGGEST_SERVER (or a stored pairing) says otherwise.
+    // Local unless TWO_KHZ_SERVER (or a stored pairing) says otherwise.
     // Not fatal on mobile: no stderr anyone will read and no local corpus, so
     // a phone launches into the setup screen instead.
-    let started = qsuggest::app::bootstrap();
+    let started = two_khz::app::bootstrap();
 
     #[cfg(not(feature = "mobile"))]
     if let Err(err) = started {
@@ -15,11 +15,11 @@ fn main() {
         eprintln!(
             "\nEither run the pipeline first:\n  \
              cd app && cargo run --release --bin crawl -- --max-tracks 500\n  \
-             cd ../pipeline && uv run qsuggest analyse\n  \
-             uv run qsuggest build-space\n  \
-             uv run qsuggest layout\n\n\
+             cd ../pipeline && uv run two-khz analyse\n  \
+             uv run two-khz build-space\n  \
+             uv run two-khz layout\n\n\
              or point this at a server:\n  \
-             QSUGGEST_SERVER=http://host:7700 QSUGGEST_TOKEN=... cargo run"
+             TWO_KHZ_SERVER=http://host:7700 TWO_KHZ_TOKEN=... cargo run"
         );
         std::process::exit(1);
     }
@@ -30,13 +30,13 @@ fn main() {
     // A locally started stage must not outlive the window. (A stage started on
     // a *server* deliberately does, see ui::pipeline.) No-op without `local`.
     #[cfg(feature = "local")]
-    qsuggest::stages::install_exit_guard();
+    two_khz::stages::install_exit_guard();
 
     #[cfg(feature = "mobile")]
-    dioxus::launch(qsuggest::app::App);
+    dioxus::launch(two_khz::app::App);
 
     // Three columns plus a map need room; the default window collapses them.
-    // QSUGGEST_WINDOW=WxH overrides it, mostly to check the responsive layout
+    // TWO_KHZ_WINDOW=WxH overrides it, mostly to check the responsive layout
     // at phone width without a phone.
     #[cfg(not(feature = "mobile"))]
     {
@@ -45,17 +45,17 @@ fn main() {
             .with_cfg(
                 dioxus::desktop::Config::new().with_window(
                     dioxus::desktop::WindowBuilder::new()
-                        .with_title("Qobuz suggestion space")
+                        .with_title("2kHz")
                         .with_inner_size(dioxus::desktop::LogicalSize::new(width, height)),
                 ),
             )
-            .launch(qsuggest::app::App);
+            .launch(two_khz::app::App);
     }
 }
 
 #[cfg(not(feature = "mobile"))]
 fn window_size() -> (f64, f64) {
-    std::env::var("QSUGGEST_WINDOW")
+    std::env::var("TWO_KHZ_WINDOW")
         .ok()
         .and_then(|spec| {
             let (w, h) = spec.split_once(['x', 'X'])?;
