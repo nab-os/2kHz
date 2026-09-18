@@ -1,11 +1,11 @@
-//! `qsuggest-server`: the half that owns the credentials and the machine.
+//! `two-khz-server`: the half that owns the credentials and the machine.
 //!
 //! Holds the Qobuz token, the shared rate limit, the database, the CLAP text
 //! tower and the pipeline stages. Clients get a slim catalogue and the vectors.
 //!
 //! ```sh
-//! qsuggest-server pair --name desktop --scope pipeline   # first device
-//! qsuggest-server serve                                  # 127.0.0.1:7700
+//! two-khz-server pair --name desktop --scope pipeline   # first device
+//! two-khz-server serve                                  # 127.0.0.1:7700
 //! ```
 //!
 //! Plain HTTP, loopback by default. The token and the signed stream URLs are
@@ -19,8 +19,8 @@ use anyhow::{Context, Result};
 use auth::AuthStore;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use qsuggest::api::Scope;
-use qsuggest::backend::Local;
+use two_khz::api::Scope;
+use two_khz::backend::Local;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,7 +84,7 @@ impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         (
             self.status,
-            axum::Json(qsuggest::api::ApiError {
+            axum::Json(two_khz::api::ApiError {
                 message: self.message,
             }),
         )
@@ -97,7 +97,7 @@ impl IntoResponse for Failure {
 fn usage() -> ! {
     eprintln!(
         "\
-qsuggest-server: the server half of the Qobuz suggestion system
+two-khz-server: the server half of 2kHz
 
   serve [--bind ADDR]            run the API (default {DEFAULT_BIND})
   pair --name NAME [--scope S]   mint a device token; S is play|pipeline
@@ -122,8 +122,8 @@ fn main() -> Result<()> {
         usage()
     };
 
-    let data_dir = qsuggest::default_data_dir();
-    let db_path = qsuggest::default_db_path();
+    let data_dir = two_khz::default_data_dir();
+    let db_path = two_khz::default_db_path();
     let store = AuthStore::new(&db_path)?;
 
     match command {
@@ -148,8 +148,8 @@ fn main() -> Result<()> {
             let grant = store.issue(&name, scope)?;
             println!(
                 "Paired “{}” with scope {}.\n\nSet this on the device, it is not shown again:\n\n  \
-                 export QSUGGEST_SERVER=http://<this-host>:7700\n  \
-                 export QSUGGEST_TOKEN={}\n",
+                 export TWO_KHZ_SERVER=http://<this-host>:7700\n  \
+                 export TWO_KHZ_TOKEN={}\n",
                 grant.device.name,
                 scope.as_str(),
                 grant.token
@@ -159,7 +159,7 @@ fn main() -> Result<()> {
         "devices" => {
             let devices = store.list()?;
             if devices.is_empty() {
-                println!("No devices paired. Start with:\n  qsuggest-server pair --name desktop --scope pipeline");
+                println!("No devices paired. Start with:\n  two-khz-server pair --name desktop --scope pipeline");
             }
             for device in devices {
                 println!(
@@ -174,7 +174,7 @@ fn main() -> Result<()> {
         }
         "revoke" => {
             let Some(id) = args.get(1).and_then(|v| v.parse::<i64>().ok()) else {
-                eprintln!("revoke needs a device id; see `qsuggest-server devices`");
+                eprintln!("revoke needs a device id; see `two-khz-server devices`");
                 std::process::exit(2);
             };
             store.revoke(id)?;
@@ -213,17 +213,17 @@ fn serve(bind: String, data_dir: PathBuf, db_path: PathBuf, store: AuthStore) ->
     if store.count()? == 0 {
         eprintln!(
             "No devices are paired, so every request will be refused. Mint one with:\n  \
-             qsuggest-server pair --name desktop --scope pipeline\n"
+             two-khz-server pair --name desktop --scope pipeline\n"
         );
     }
 
     // A stage must not outlive the server.
-    qsuggest::stages::install_exit_guard();
+    two_khz::stages::install_exit_guard();
 
     let local = Arc::new(Local::new(
-        qsuggest::qobuz::repo_root(),
+        two_khz::qobuz::repo_root(),
         db_path.clone(),
-        qsuggest::default_model_dir(),
+        two_khz::default_model_dir(),
     ));
 
     let state = AppState {
@@ -241,7 +241,7 @@ fn serve(bind: String, data_dir: PathBuf, db_path: PathBuf, store: AuthStore) ->
         tokio::spawn(watch_generation(local, db_path, data_dir));
 
         let listener = tokio::net::TcpListener::bind(address).await?;
-        println!("qsuggest-server listening on http://{address}");
+        println!("two-khz-server listening on http://{address}");
 
         axum::serve(listener, routes::router(state))
             .with_graceful_shutdown(shutdown())

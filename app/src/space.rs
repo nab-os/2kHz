@@ -68,7 +68,7 @@ impl Space {
         anyhow::ensure!(
             manifest.version == SPACE_VERSION,
             "space.json is format {}, this build reads {}, rebuild it:\n  \
-             cd pipeline && uv run qsuggest build-space && uv run qsuggest layout",
+             cd pipeline && uv run two-khz build-space && uv run two-khz layout",
             manifest.version,
             SPACE_VERSION
         );

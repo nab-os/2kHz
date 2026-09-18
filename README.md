@@ -1,4 +1,4 @@
-# Qobuz suggestion system
+# 2kHz
 
 Music as a navigable space. Every track becomes a point in ~80 dimensions where
 distance approximates perceptual similarity, so recommendation becomes geometry:
@@ -24,14 +24,14 @@ half of every vector is computed from the audio itself.
    Essentia + CLAP extraction                                     │
                  │                                                │ binary over
                  ▼                                                │ custom protocol
-       assemble space ──────────────►  data/qsuggest.db           ▼
+       assemble space ──────────────►  data/two_khz.db           ▼
                  │                     data/space.bin      webview: canvas map,
                  ▼                     data/space.json     controls, <audio>
          UMAP 2D layout ────────────►  layout
 ```
 
 Python does the modelling (Essentia, CLAP, UMAP). Rust does I/O and interaction.
-The two meet at files rather than a socket: both read and write `qsuggest.db`,
+The two meet at files rather than a socket: both read and write `two_khz.db`,
 and Python writes the vector file that Rust memory-maps. The schema is
 `schema.sql` at the repo root, executed by both halves, so they cannot drift.
 
@@ -54,7 +54,7 @@ API no longer serves anonymous requests, so sign-in has to happen in a browser:
 
 ```sh
 cd pipeline
-uv run qsuggest login
+uv run two-khz login
 ```
 
 That scrapes the current app id and signing secrets from the web player, opens
@@ -69,18 +69,18 @@ QOBUZ_USER_AUTH_TOKEN=<the token>
 ```
 
 Tokens expire when the session ends. The app id and secrets rotate with web
-player releases; `qsuggest refresh-credentials --write` re-scrapes those alone.
+player releases; `two-khz refresh-credentials --write` re-scrapes those alone.
 
 ## Running the pipeline
 
 ```sh
 cd app     && cargo run --release --bin crawl -- --max-tracks 2000
 cd pipeline
-uv run qsuggest whoami                       # verify credentials
-uv run qsuggest analyse                      # download excerpts, extract features
-uv run qsuggest build-space                  # assemble vectors
-uv run qsuggest layout                       # UMAP projection for the map
-uv run qsuggest evaluate                     # space sanity check
+uv run two-khz whoami                       # verify credentials
+uv run two-khz analyse                      # download excerpts, extract features
+uv run two-khz build-space                  # assemble vectors
+uv run two-khz layout                       # UMAP projection for the map
+uv run two-khz evaluate                     # space sanity check
 ```
 
 Every stage is resumable: the crawl frontier lives in SQLite and analysis skips
@@ -90,7 +90,7 @@ For text steering, export the CLAP text tower once, 479MB, lands in
 `data/models/`:
 
 ```sh
-uv run python -m qsuggest.features.onnx_export
+uv run python -m two_khz.features.onnx_export
 ```
 
 ### Crawling
@@ -107,7 +107,7 @@ cargo run --release --bin crawl -- --album 0634904077969
 ```
 
 Requests are limited to 2/s with retry-and-backoff on 429s, one account pays
-for every call. `uv run qsuggest crawl` still exists and writes the same tables.
+for every call. `uv run two-khz crawl` still exists and writes the same tables.
 
 The app can crawl while you use it, from the **Pipeline** view. Both halves
 share the one rate limit, so browsing during a crawl is slower, not blocked.
@@ -150,8 +150,8 @@ browsing the space does not.
 To try the app without a real corpus:
 
 ```sh
-cd pipeline && uv run python scripts/make_demo.py /tmp/qsuggest-demo
-cd ../app && QSUGGEST_DATA_DIR=/tmp/qsuggest-demo/data cargo run
+cd pipeline && uv run python scripts/make_demo.py /tmp/two-khz-demo
+cd ../app && TWO_KHZ_DATA_DIR=/tmp/two-khz-demo/data cargo run
 ```
 
 ## Hiding an artist
@@ -161,10 +161,10 @@ them, follow them to their similar artists, analyse their tracks or place them
 in the space, and the app hides what is already stored and refuses to play it.
 
 ```sh
-uv run qsuggest block "artist name"       # or an artist id
-uv run qsuggest block 224109 --reason "why"
-uv run qsuggest blocked                   # list
-uv run qsuggest unblock 224109
+uv run two-khz block "artist name"       # or an artist id
+uv run two-khz block 224109 --reason "why"
+uv run two-khz blocked                   # list
+uv run two-khz unblock 224109
 ```
 
 Or click **hide** on any artist or track in the app. The **Hidden** panel at the
@@ -211,7 +211,7 @@ cargo run --release -- serve                                  # 127.0.0.1:7700
 Then point a client at it:
 
 ```sh
-QSUGGEST_SERVER=http://host:7700 QSUGGEST_TOKEN=<token> cargo run
+TWO_KHZ_SERVER=http://host:7700 TWO_KHZ_TOKEN=<token> cargo run
 ```
 
 Two scopes, both authenticated: `play` is browsing, syncing and minting a stream
@@ -235,7 +235,7 @@ cd app
 dx build --release --platform android --target aarch64-linux-android \
    --no-default-features --features mobile
 
-adb install -r target/dx/qsuggest-app/release/android/app/app/build/outputs/apk/debug/app-debug.apk
+adb install -r target/dx/two-khz-app/release/android/app/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 `--target` matters: without it `dx` builds x86_64 for an emulator, which will

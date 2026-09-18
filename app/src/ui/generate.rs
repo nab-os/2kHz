@@ -34,6 +34,14 @@ impl Mode {
         }
     }
 
+    /// Whether the selection is this mode's only input, and so whether it can
+    /// follow it instead of waiting for the generate button. Same split as
+    /// `Generator::ready`, derived from the same question so the two cannot
+    /// disagree.
+    fn follows_selection(self) -> bool {
+        matches!(self, Mode::Neighbours | Mode::Radio)
+    }
+
     fn blurb(self) -> &'static str {
         match self {
             Mode::Neighbours => "The most similar tracks to the selection.",
@@ -201,7 +209,7 @@ fn as_remote(meta: &crate::db::TrackMeta) -> RemoteTrack {
 }
 
 async fn export(track_ids: Vec<i64>) -> anyhow::Result<i64> {
-    let name = format!("qsuggest ({} tracks)", track_ids.len());
+    let name = format!("two_khz ({} tracks)", track_ids.len());
     backend().export_playlist(&name, &track_ids).await
 }
 
@@ -239,11 +247,12 @@ pub fn GeneratePanel() -> Element {
         }
     });
 
-    // Neighbours is cheap and browsing-shaped, so it follows the selection.
-    // The other modes are journeys you start deliberately.
+    // Modes whose only input is the selection follow it; the others need a
+    // second endpoint or a phrase, so they stay deliberate. Clicking a result
+    // row re-runs from that track.
     use_effect(move || {
         let current = selected();
-        if *generator.mode.read() == Mode::Neighbours && current.is_some() {
+        if current.is_some() && generator.mode.read().follows_selection() {
             generator.run(current);
         }
     });
@@ -308,7 +317,7 @@ pub fn GeneratePanel() -> Element {
             if mode == Mode::Drift && !generator.can_steer() {
                 p { class: "muted error",
                     "Drift needs the exported CLAP text tower. Run: "
-                    code { "uv run python -m qsuggest.features.onnx_export" }
+                    code { "uv run python -m two_khz.features.onnx_export" }
                 }
             }
 

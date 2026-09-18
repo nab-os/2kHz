@@ -407,7 +407,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="qsuggest", description=__doc__)
+    parser = argparse.ArgumentParser(prog="two-khz", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
     def with_weights(p):

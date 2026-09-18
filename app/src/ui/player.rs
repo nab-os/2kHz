@@ -16,6 +16,10 @@ pub struct Player {
     pub position: Signal<(f64, f64)>,
     pub quality: Signal<u32>,
     pub status: Signal<Option<String>>,
+    /// 0.0 to 1.0, independent of the device's own volume. Rides on the
+    /// `<audio>` element, which survives a src swap.
+    pub volume: Signal<f64>,
+    pub muted: Signal<bool>,
 }
 
 impl Player {
@@ -23,6 +27,19 @@ impl Player {
         let index = *self.index.peek();
         self.queue.peek().get(index).cloned()
     }
+}
+
+/// Push the level at the audio element. Muting sends 0 rather than setting
+/// `audio.muted`, so unmuting restores the slider without a second copy.
+pub fn apply_volume(player: Player) {
+    let level = if *player.muted.peek() {
+        0.0
+    } else {
+        *player.volume.peek()
+    };
+    document::eval(&format!(
+        "window.twoKhzVolume && window.twoKhzVolume({level});"
+    ));
 }
 
 pub fn quality_label(format_id: u32) -> &'static str {
@@ -99,6 +116,7 @@ pub async fn play_at(mut player: Player, index: usize) {
     }
 
     player.status.set(Some(format!("loading {}…", track.title)));
+    apply_volume(player);
     let format_id = *player.quality.peek();
 
     match stream_url(track.id, format_id).await {
@@ -107,7 +125,7 @@ pub async fn play_at(mut player: Player, index: usize) {
             // The signed URL is short-lived and this is the app's own webview,
             // so there is nothing to proxy it away from.
             document::eval(&format!(
-                "(window.qsuggestPlayUrl || function (u) {{ \
+                "(window.twoKhzPlayUrl || function (u) {{ \
                    var p = document.getElementById('player'); \
                    if (p) {{ p.src = u; p.play(); }} \
                  }})({});",
@@ -134,9 +152,9 @@ pub fn step(player: Player, delta: isize) {
 
 fn toggle(player: Player) {
     if *player.playing.peek() {
-        transport("qsuggestPause");
+        transport("twoKhzPause");
     } else if player.position.peek().1 > 0.0 || *player.index.peek() > 0 {
-        transport("qsuggestResume");
+        transport("twoKhzResume");
     } else if !player.queue.peek().is_empty() {
         // Queued but never started.
         let start = *player.index.peek();
@@ -163,6 +181,8 @@ pub fn PlayerBar() -> Element {
     let index = *player.index.read();
     let playing = *player.playing.read();
     let quality = *player.quality.read();
+    let volume = *player.volume.read();
+    let muted = *player.muted.read();
 
     // The audio element's own duration is authoritative once it has loaded;
     // Qobuz's metadata fills the gap before that.
@@ -223,7 +243,7 @@ pub fn PlayerBar() -> Element {
                         oninput: move |event| {
                             if let Ok(value) = event.value().parse::<f64>() {
                                 document::eval(&format!(
-                                    "window.qsuggestSeek && window.qsuggestSeek({});",
+                                    "window.twoKhzSeek && window.twoKhzSeek({});",
                                     value / 1000.0
                                 ));
                             }
@@ -236,6 +256,37 @@ pub fn PlayerBar() -> Element {
             div { class: "player-meta",
                 if queue_length > 0 {
                     span { class: "muted", "{index + 1}/{queue_length}" }
+                }
+
+                div { class: "volume",
+                    button {
+                        class: "chip",
+                        title: if muted { "unmute" } else { "mute" },
+                        onclick: move |_| {
+                            let next = !*player.muted.peek();
+                            player.muted.set(next);
+                            apply_volume(player);
+                        },
+                        if muted || volume <= 0.0 { "🔇" } else { "🔊" }
+                    }
+                    input {
+                        r#type: "range",
+                        min: "0",
+                        max: "100",
+                        step: "1",
+                        value: "{(volume * 100.0).round() as i64}",
+                        oninput: move |event| {
+                            if let Ok(percent) = event.value().parse::<f64>() {
+                                player.volume.set((percent / 100.0).clamp(0.0, 1.0));
+                                // Dragging the slider is an unambiguous request
+                                // to hear something.
+                                if percent > 0.0 {
+                                    player.muted.set(false);
+                                }
+                                apply_volume(player);
+                            }
+                        },
+                    }
                 }
                 select {
                     onchange: move |event| {
@@ -260,7 +311,7 @@ pub fn PlayerBar() -> Element {
                         player.queue.set(Vec::new());
                         player.index.set(0);
                         player.position.set((0.0, 0.0));
-                        transport("qsuggestStop");
+                        transport("twoKhzStop");
                     },
                     "clear"
                 }

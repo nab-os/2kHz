@@ -31,7 +31,7 @@ impl Stage {
         }
     }
 
-    /// The `qsuggest` subcommand, for the three stages that are Python.
+    /// The `two_khz` subcommand, for the three stages that are Python.
     /// Crawl is native, so it has none.
     pub fn command(self) -> Option<&'static str> {
         match self {

@@ -1,6 +1,6 @@
-//! Core of the Qobuz suggestion system.
+//! Core of 2kHz.
 //!
-//! Reads what the Python pipeline produces, `qsuggest.db`, `space.bin`,
+//! Reads what the Python pipeline produces, `two_khz.db`, `space.bin`,
 //! `space.json`, and answers navigation queries in process.
 //!
 //! Shared by three binaries, the server and the Android app. What runs behind
@@ -154,7 +154,7 @@ pub fn set_data_dir(dir: PathBuf) {
 /// `CARGO_MANIFEST_DIR` is compile-time, so this only means anything where
 /// build and run share a filesystem, never on Android.
 pub fn default_data_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("QSUGGEST_DATA_DIR") {
+    if let Ok(dir) = std::env::var("TWO_KHZ_DATA_DIR") {
         return PathBuf::from(dir);
     }
     // app/ lives next to data/ in the repo.
@@ -165,13 +165,13 @@ pub fn default_data_dir() -> PathBuf {
 }
 
 pub fn default_db_path() -> PathBuf {
-    default_data_dir().join("qsuggest.db")
+    default_data_dir().join("two_khz.db")
 }
 
 /// Model weights are shared across corpora, so they do not follow
-/// QSUGGEST_DATA_DIR. Mirrors `models.MODEL_DIR` on the Python side.
+/// TWO_KHZ_DATA_DIR. Mirrors `models.MODEL_DIR` on the Python side.
 pub fn default_model_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("QSUGGEST_MODEL_DIR") {
+    if let Ok(dir) = std::env::var("TWO_KHZ_MODEL_DIR") {
         return PathBuf::from(dir);
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -188,7 +188,7 @@ pub fn client_data_dir() -> PathBuf {
     if let Some(dir) = DATA_DIR_OVERRIDE.get() {
         return dir.clone();
     }
-    if let Ok(dir) = std::env::var("QSUGGEST_DATA_DIR") {
+    if let Ok(dir) = std::env::var("TWO_KHZ_DATA_DIR") {
         return PathBuf::from(dir);
     }
 
@@ -204,7 +204,7 @@ pub fn client_data_dir() -> PathBuf {
                 .join(".local")
                 .join("share")
         });
-    base.join("qsuggest")
+    base.join("two_khz")
 }
 
 /// The app's private directory, worked out without JNI.
@@ -231,7 +231,7 @@ fn android_files_dir() -> Option<PathBuf> {
     for base in ["/data/user/0", "/data/data"] {
         let dir = PathBuf::from(base).join(&package).join("files");
         if std::fs::create_dir_all(&dir).is_ok() {
-            return Some(dir.join("qsuggest"));
+            return Some(dir.join("two_khz"));
         }
     }
     None
@@ -244,8 +244,8 @@ fn android_files_dir() -> Option<PathBuf> {
 /// Two environment variables on desktop:
 ///
 /// ```sh
-/// QSUGGEST_SERVER=https://nas.tailnet.ts.net:7700
-/// QSUGGEST_TOKEN=<what `qsuggest-server pair` printed>
+/// TWO_KHZ_SERVER=https://nas.tailnet.ts.net:7700
+/// TWO_KHZ_TOKEN=<what `two-khz-server pair` printed>
 /// ```
 ///
 /// With neither set, a `local` build does everything in process. A `mobile`
@@ -293,12 +293,12 @@ impl ServerConfig {
 impl Wiring {
     /// Environment first, stored config second, local last.
     pub fn from_env() -> Result<Self> {
-        if let Ok(base) = std::env::var("QSUGGEST_SERVER") {
-            let token = std::env::var("QSUGGEST_TOKEN").map_err(|_| {
+        if let Ok(base) = std::env::var("TWO_KHZ_SERVER") {
+            let token = std::env::var("TWO_KHZ_TOKEN").map_err(|_| {
                 anyhow::anyhow!(
-                    "QSUGGEST_SERVER is set but QSUGGEST_TOKEN is not.\n\
+                    "TWO_KHZ_SERVER is set but TWO_KHZ_TOKEN is not.\n\
                      Pair this device on the server:\n  \
-                     qsuggest-server pair --name \"{}\" --scope play",
+                     two-khz-server pair --name \"{}\" --scope play",
                     hostname()
                 )
             })?;

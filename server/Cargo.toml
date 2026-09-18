@@ -1,5 +1,5 @@
 [package]
-name = "qsuggest-server"
+name = "two-khz-server"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,14 +7,14 @@ edition = "2021"
 # would force a from-scratch rebuild of ort, rusqlite-bundled and dioxus.
 
 [[bin]]
-name = "qsuggest-server"
+name = "two-khz-server"
 path = "src/main.rs"
 
 [dependencies]
-# Package is `qsuggest-app`; its library target is named `qsuggest`.
+# Package is `two-khz-app`; its library target is named `two_khz`.
 # The server is the local half, so it wants `local` and not `desktop`: there is
 # no window here, so no dioxus, wry or GTK.
-qsuggest-app = { path = "../app", default-features = false, features = ["local"] }
+two-khz-app = { path = "../app", default-features = false, features = ["local"] }
 
 anyhow = "1"
 axum = "0.8"

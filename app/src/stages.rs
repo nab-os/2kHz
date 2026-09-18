@@ -1,7 +1,7 @@
 //! Running a pipeline stage as a subprocess, and not leaving it behind.
 //!
 //! Three of the four stages are Python and always will be, so whoever drives
-//! them runs `uv run qsuggest <stage>` and reads its output. Progress goes to
+//! them runs `uv run two-khz <stage>` and reads its output. Progress goes to
 //! stderr and results to stdout, so both are read and interleaved.
 //!
 //! In the library because both drivers need it, and because the process-group
@@ -194,14 +194,14 @@ pub async fn run(
     let uv = uv_path();
     let mut builder = tokio::process::Command::new(&uv);
     builder
-        .args(["run", "qsuggest", command])
+        .args(["run", "two-khz", command])
         .current_dir(repo_root.join("pipeline"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
     // Its own process group, so cancelling takes the whole tree down.
-    // `uv run` spawns qsuggest, which spawns its own workers; killing uv alone
+    // `uv run` spawns two_khz, which spawns its own workers; killing uv alone
     // leaves them running.
     #[cfg(unix)]
     builder.process_group(0);

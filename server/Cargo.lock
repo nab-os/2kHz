@@ -1483,44 +1483,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qsuggest-app"
-version = "0.1.0"
-dependencies = [
- "android_logger",
- "anyhow",
- "bytemuck",
- "futures-util",
- "libc",
- "log",
- "md-5",
- "memmap2",
- "ort",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tokenizers",
- "tokio",
-]
-
-[[package]]
-name = "qsuggest-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "futures-util",
- "qsuggest-app",
- "rand 0.9.5",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2409,6 +2371,44 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "two-khz-app"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "anyhow",
+ "bytemuck",
+ "futures-util",
+ "libc",
+ "log",
+ "md-5",
+ "memmap2",
+ "ort",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+]
+
+[[package]]
+name = "two-khz-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "futures-util",
+ "rand 0.9.5",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-stream",
+ "two-khz-app",
+]
 
 [[package]]
 name = "typenum"

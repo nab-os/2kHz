@@ -1,7 +1,7 @@
 //! The API.
 //!
 //! Thin on purpose: every handler is a scope check and a call into
-//! `qsuggest::backend::Local`, the same type the desktop app uses locally.
+//! `two_khz::backend::Local`, the same type the desktop app uses locally.
 //! There must never be a second implementation here.
 //!
 //! Bounded gestures are `play`, unbounded jobs are `pipeline`.
@@ -13,11 +13,11 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use qsuggest::api::{
+use two_khz::api::{
     BlockedArtist, Corpus, CrawlStatus, Device, PairingGrant, PipelineStatus, Scope, Stage,
     SyncFile, SyncManifest,
 };
-use qsuggest::qobuz::{RemoteAlbum, RemoteArtist, RemotePlaylist, RemoteTrack, SearchResults};
+use two_khz::qobuz::{RemoteAlbum, RemoteArtist, RemotePlaylist, RemoteTrack, SearchResults};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -114,7 +114,7 @@ struct FormatQuery {
 }
 
 fn default_format() -> u32 {
-    qsuggest::qobuz::FORMAT_MP3_320
+    two_khz::qobuz::FORMAT_MP3_320
 }
 
 // ----------------------------------------------------------------- browsing
@@ -352,7 +352,7 @@ struct CrawlBody {
 }
 
 fn default_distance() -> i64 {
-    qsuggest::crawl::DEFAULT_MAX_DISTANCE
+    two_khz::crawl::DEFAULT_MAX_DISTANCE
 }
 
 /// Unbounded, so `pipeline`: this runs until the frontier empties.
@@ -435,8 +435,8 @@ async fn pipeline_log(State(state): State<AppState>, _: PlayAuth) -> impl IntoRe
 // --------------------------------------------------------------------- sync
 
 /// What a client needs to navigate: the vectors, the manifest describing them,
-/// and a catalogue. Not `qsuggest.db` itself, clients get `catalog.db`, the
-/// slim projection built by `qsuggest-server sync-catalog`.
+/// and a catalogue. Not `two_khz.db` itself, clients get `catalog.db`, the
+/// slim projection built by `two-khz-server sync-catalog`.
 const SYNCED: [&str; 4] = ["space.bin", "space.json", "semantic_pca.bin", "catalog.db"];
 
 async fn sync_manifest(State(state): State<AppState>, _: PlayAuth) -> Reply<SyncManifest> {
@@ -452,7 +452,7 @@ async fn sync_manifest(State(state): State<AppState>, _: PlayAuth) -> Reply<Sync
         files.push(SyncFile {
             name: name.to_string(),
             bytes: bytes.len() as u64,
-            digest: qsuggest::api::digest(&bytes),
+            digest: two_khz::api::digest(&bytes),
         });
     }
 
@@ -518,5 +518,5 @@ async fn revoke_device(
 /// The one unauthenticated route. Says nothing except that something is
 /// listening, which is what a health check is for.
 async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "service": "qsuggest-server" }))
+    Json(serde_json::json!({ "ok": true, "service": "two-khz-server" }))
 }

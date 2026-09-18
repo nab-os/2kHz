@@ -3,8 +3,8 @@
 
 Useful for exercising the desktop app before a real crawl exists:
 
-  uv run python scripts/make_demo.py /tmp/qsuggest-demo
-  cd ../app && QSUGGEST_DATA_DIR=/tmp/qsuggest-demo/data cargo run
+  uv run python scripts/make_demo.py /tmp/two-khz-demo
+  cd ../app && TWO_KHZ_DATA_DIR=/tmp/two-khz-demo/data cargo run
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ if len(sys.argv) < 2:
     raise SystemExit(2)
 
 WORKDIR = Path(sys.argv[1]).resolve()
-os.environ["QSUGGEST_DATA_DIR"] = str(WORKDIR / "data")
-os.environ["QSUGGEST_CACHE_DIR"] = str(WORKDIR / "cache")
+os.environ["TWO_KHZ_DATA_DIR"] = str(WORKDIR / "data")
+os.environ["TWO_KHZ_CACHE_DIR"] = str(WORKDIR / "cache")
 
 import synthetic  # noqa: E402
 
-from qsuggest import space  # noqa: E402
+from two_khz import space  # noqa: E402
 
 
 def main() -> int:
@@ -56,7 +56,7 @@ def main() -> int:
     conn.commit()
 
     print(f"\ndemo corpus ready at {WORKDIR / 'data'}")
-    print(f"run the app with:\n  cd app && QSUGGEST_DATA_DIR={WORKDIR / 'data'} cargo run")
+    print(f"run the app with:\n  cd app && TWO_KHZ_DATA_DIR={WORKDIR / 'data'} cargo run")
     return 0
 
 
