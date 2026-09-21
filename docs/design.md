@@ -185,3 +185,22 @@ of work on the data layer, not an afternoon of cfg attributes.
 
 Essentia's pretrained weights are CC BY-NC-SA 4.0, fine personally, blocking
 for anything commercial. CLAP is the permissive one.
+
+## Packaging
+
+Each Ubuntu release is built on its own runner, because each links against its
+own webkit and glibc, a 24.04 build is not safe to hand to a 26.04 machine.
+`ubuntu-latest` is deliberately unused: it migrates from 24.04 to 26.04 during
+October to November 2026, which would quietly collapse the matrix into two
+identical legs.
+
+The desktop and server packages are separate because the headless build is
+`--no-default-features --features local`, which keeps dioxus, wry and GTK out of
+it entirely: the desktop `.deb` depends on twelve libraries including webkit,
+the server `.deb` on three. A server box should not be made to install a
+browser engine.
+
+Dependencies are computed by `dpkg-shlibdeps` on the release being built for
+rather than hardcoded, because 24.04's 64-bit `time_t` transition renamed
+several of them, `libgtk-3-0` became `libgtk-3-0t64`, `libssl3` became
+`libssl3t64`, so a fixed list would be wrong on one release or the other.
