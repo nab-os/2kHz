@@ -231,7 +231,7 @@ not need a Rust toolchain or a `uv` of its own.
 
 ```sh
 docker run -d --init --name two-khz -p 127.0.0.1:7700:7700 \
-  -v two-khz-data:/data --env-file .env 4gjr3z1t/2khz:latest
+  -v two-khz-data:/data --env-file .env 4gjr3z1t/2khz:v0.6
 
 docker exec two-khz two-khz-server pair --name phone --scope play
 ```
@@ -243,8 +243,12 @@ Two targets, because the analysis stack is not small:
 
 | image | what it carries | size |
 |---|---|---|
-| `4gjr3z1t/2khz` | the API, the Rust crawler, `embed` | 266MB |
-| `ghcr.io/nab-os/two-khz-server:pipeline` | the above plus uv, ffmpeg and the Python stages | 1.6GB, several more with `extract` |
+| `4gjr3z1t/2khz:v0.6` | the API, the Rust crawler, `embed` | 266MB |
+| `ghcr.io/nab-os/two-khz-server:v0.6-pipeline` | the above plus uv, ffmpeg and the Python stages | 1.6GB, several more with `extract` |
+
+Both carry moving tags too, `:latest` and `:pipeline`, but everything here
+pins a version, so that pulling never silently changes the server underneath a
+corpus that took hours to build.
 
 The slim one is on both Docker Hub and GHCR; the pipeline one is GHCR-only,
 being several GB. Starting a **Python** stage on the slim image fails with
