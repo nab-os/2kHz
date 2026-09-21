@@ -33,7 +33,7 @@ jobs:
         ubuntu: ["24.04", "26.04"]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # libwebkit2gtk-4.1 is what wry 0.53 links against, and it exists on
       # both releases. libxdo/libappindicator come in via tao and tray-icon.
@@ -162,7 +162,7 @@ jobs:
           done
           ls -lh dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ubuntu-${{ matrix.ubuntu }}
           path: dist/*
@@ -170,19 +170,30 @@ jobs:
 
   # -------------------------------------------------------------- android
   #
-  # Skipped for pull requests from forks, which structurally cannot read the
-  # signing secrets this job requires.
+  # Disabled for the time being. Everything below is known to work, it was
+  # built and signed end to end, it is only switched off.
+  #
+  # To re-enable, replace `if: false` with the condition below, which skips
+  # only pull requests from forks, since those structurally cannot read the
+  # signing secrets this job requires:
+  #
+  #     if: >-
+  #       github.event_name != 'pull_request' ||
+  #       github.event.pull_request.head.repo.full_name == github.repository
+  #
+  # Then add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD and
+  # ANDROID_KEY_ALIAS as repository secrets, and put `android` back in the
+  # release job's `needs:` so the APK is attached to tagged releases.
+  # See "Signing the APK" in the README.
   android:
     name: android (arm64)
     runs-on: ubuntu-24.04
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: false
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -280,7 +291,7 @@ jobs:
           "$BT/apksigner" verify --verbose --print-certs "$OUT"
           ls -lh dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android
           path: dist/*.apk
@@ -289,16 +300,18 @@ jobs:
   # -------------------------------------------------------------- release
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, android]
+    # `android` is deliberately absent while that job is disabled: a skipped
+    # job counts as unsatisfied, which would skip this one too.
+    needs: [linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - run: ls -lhR artifacts
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/**/*
           generate_release_notes: true

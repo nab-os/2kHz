@@ -258,11 +258,14 @@ on demand. A tag additionally opens a GitHub release with everything attached.
 |---|---|
 | Ubuntu 24.04 | `.deb`, `.AppImage`, `.tar.gz`, desktop and server separately |
 | Ubuntu 26.04 | the same, built on 26.04 |
-| Android | one signed arm64 `.apk` |
+| Android | one signed arm64 `.apk`, **currently disabled** |
 
 Each Ubuntu release builds on its own runner, and the desktop and server
 packages are separate, see [docs/design.md](docs/design.md#packaging).
 
+The Android job is switched off (`if: false`) rather than deleted. Re-enabling
+it is the one-line change described in the comment above the job, plus the
+secrets below.
 
 ### Signing the APK
 
