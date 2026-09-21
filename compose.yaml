@@ -1,0 +1,61 @@
+# An example deployment of the server half. Copy it, adjust it, then:
+#
+#   cp .env.example .env                                  # Qobuz credentials
+#   docker compose build
+#   docker compose run --rm server pair --name desktop --scope pipeline
+#   docker compose run --rm server build-catalog          # the slim copy
+#   docker compose up -d
+#
+# Pairing prints a token once. Point a client at it with:
+#
+#   TWO_KHZ_SERVER=http://<this-host>:7700 TWO_KHZ_TOKEN=<token>
+
+name: two-khz
+
+services:
+  server:
+    build:
+      context: .
+      # `pipeline` instead if this machine is also to run analyse/layout.
+      # Several GB, x86_64 only.
+      target: server
+    image: two-khz-server:local
+
+    # Loopback inside the container would be unreachable from outside it, so
+    # the bind is 0.0.0.0 and the *published* port is the one restricted to
+    # localhost. This speaks plain HTTP and hands out device tokens and signed
+    # stream URLs, so reaching it from another machine belongs behind
+    # WireGuard/Tailscale or a TLS proxy, not a wider port mapping.
+    command: ["serve", "--bind", "0.0.0.0:7700"]
+    ports:
+      - "127.0.0.1:7700:7700"
+
+    # QOBUZ_APP_ID, QOBUZ_USER_AUTH_TOKEN and friends. The environment wins
+    # over any .env inside the image, so nothing needs mounting for this.
+    env_file:
+      - path: .env
+        required: false
+
+    volumes:
+      - data:/data     # corpus, space, catalog.db, device tokens, back this up
+      - cache:/cache   # audio excerpts, evicted as analyse runs
+      # Weights already on the host? Mount them instead of re-downloading:
+      # - /srv/two-khz/models:/data/models
+
+    # PID 1 has no default signal dispositions, so without an init a `docker
+    # stop` would leave the server's SIGTERM handler as the only thing between
+    # a running stage and an orphaned pool of Essentia workers.
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7700/api/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  data:
+  cache:
