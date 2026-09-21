@@ -353,7 +353,11 @@ jobs:
           images: |
             docker.io/4gjr3z1t/2khz
             ghcr.io/${{ github.repository_owner }}/two-khz-server
+          # `type=ref` first and unconditionally: the tags here are `v0.5`,
+          # not `v0.5.0`, and type=semver declines anything without a patch
+          # component. Without it a release would publish `latest` alone.
           tags: |
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
@@ -411,6 +415,7 @@ jobs:
           # Suffixed rather than a separate repository, so `docker pull
           # …:pipeline` sits next to the slim tags instead of hiding.
           tags: |
+            type=ref,event=tag,suffix=-pipeline
             type=semver,pattern={{version}},suffix=-pipeline
             type=raw,value=pipeline
 
