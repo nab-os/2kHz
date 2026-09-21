@@ -2,6 +2,11 @@
 //
 // Owns rendering and all pan/zoom/hover, so dragging never crosses into Rust.
 // Points arrive once as binary; only selections go back.
+//
+// At ~30k points the naive shapes of this file all became visible on a slow
+// machine: a fill per point, a full scan per mousemove, a draw per event. The
+// three structures below, a uniform grid, per-colour batching, and a
+// frame-coalesced draw, exist only to keep those costs off the drag path.
 
 (async () => {
   const canvas = document.getElementById("map");
@@ -13,9 +18,13 @@
     "#7dcfff", "#ff9e64", "#73daca", "#c0caf5", "#b4f9f8",
   ];
 
+  const TAU = Math.PI * 2;
+
   // Reloadable: hiding an artist removes their points, and the payload is
   // rebuilt server-side, so the views have to be rebound rather than patched.
   let meta, n, ids, xy, genre;
+  // Track id -> point index. Rebuilt with the points, because the indices move.
+  let byId = new Map();
 
   async function loadPoints() {
     meta = await (await fetch("/points/meta")).json();
@@ -25,6 +34,64 @@
     ids = new Float64Array(buffer, 0, n);
     xy = new Float32Array(buffer, 8 * n, 2 * n);
     genre = new Uint16Array(buffer, 16 * n, n);
+    byId = new Map();
+    for (let i = 0; i < n; i++) byId.set(ids[i], i);
+    buildGrid();
+  }
+
+  // ------------------------------------------------------------------- grid
+  //
+  // A uniform grid over layout space, built once per point load. Both the
+  // hot loops need the same thing, the points inside a rectangle, and at
+  // any zoom past "fit" that is a small fraction of the corpus.
+
+  let grid = null;
+
+  function buildGrid() {
+    if (n === 0) {
+      grid = null;
+      return;
+    }
+    const b = meta.bounds;
+    const spanX = Math.max(b.max_x - b.min_x, 1e-6);
+    const spanY = Math.max(b.max_y - b.min_y, 1e-6);
+    // ~2 points per cell on average: enough that a hover test touches tens of
+    // points, few enough that the cell table stays small.
+    const side = Math.max(1, Math.min(512, Math.round(Math.sqrt(n / 2))));
+    // A hair wider than the data, so max_x lands inside the last cell.
+    const cellW = (spanX * 1.0001) / side;
+    const cellH = (spanY * 1.0001) / side;
+
+    const cellOf = new Int32Array(n);
+    const counts = new Int32Array(side * side + 1);
+    for (let i = 0; i < n; i++) {
+      let cx = ((xy[i * 2] - b.min_x) / cellW) | 0;
+      let cy = ((xy[i * 2 + 1] - b.min_y) / cellH) | 0;
+      if (cx < 0) cx = 0; else if (cx >= side) cx = side - 1;
+      if (cy < 0) cy = 0; else if (cy >= side) cy = side - 1;
+      const cell = cy * side + cx;
+      cellOf[i] = cell;
+      counts[cell + 1]++;
+    }
+    for (let c = 0; c < side * side; c++) counts[c + 1] += counts[c];
+
+    // Counting sort: `order` lists point indices grouped by cell, and
+    // `start[c]..start[c + 1]` is the slice belonging to cell c.
+    const cursor = counts.slice(0, side * side);
+    const order = new Int32Array(n);
+    for (let i = 0; i < n; i++) order[cursor[cellOf[i]]++] = i;
+
+    grid = { side, minX: b.min_x, minY: b.min_y, cellW, cellH, start: counts, order };
+  }
+
+  /// Clamp a layout coordinate to a column/row index.
+  function col(x) {
+    const c = ((x - grid.minX) / grid.cellW) | 0;
+    return c < 0 ? 0 : c >= grid.side ? grid.side - 1 : c;
+  }
+  function row(y) {
+    const c = ((y - grid.minY) / grid.cellH) | 0;
+    return c < 0 ? 0 : c >= grid.side ? grid.side - 1 : c;
   }
 
   await loadPoints();
@@ -33,11 +100,22 @@
   let hover = -1;
   let selected = -1;
   let route = [];
-  let routeIndex = new Map();
+
+  // The canvas rect, cached. Reading it inside draw forces a layout on every
+  // frame of a drag, which is exactly when there is no budget for one.
+  let width = 0;
+  let height = 0;
+
+  function measure() {
+    const rect = canvas.getBoundingClientRect();
+    width = rect.width;
+    height = rect.height;
+    return rect;
+  }
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
+    const rect = measure();
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -45,7 +123,7 @@
   }
 
   function fit() {
-    const rect = canvas.getBoundingClientRect();
+    const rect = measure();
     const spanX = Math.max(meta.bounds.max_x - meta.bounds.min_x, 1e-6);
     const spanY = Math.max(meta.bounds.max_y - meta.bounds.min_y, 1e-6);
     const pad = 30;
@@ -54,14 +132,105 @@
     view.offsetY = pad - meta.bounds.min_y * view.scale;
   }
 
-  const toScreen = (i) => [
-    xy[i * 2] * view.scale + view.offsetX,
-    xy[i * 2 + 1] * view.scale + view.offsetY,
-  ];
+  const screenX = (i) => xy[i * 2] * view.scale + view.offsetX;
+  const screenY = (i) => xy[i * 2 + 1] * view.scale + view.offsetY;
+  const toScreen = (i) => [screenX(i), screenY(i)];
+
+  // A pan or a wheel tick can fire several times between two frames. Painting
+  // each one is wasted work that arrives on screen as lag, so collapse them.
+  let pending = false;
+  function schedule() {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      draw();
+    });
+  }
+
+  // Screen positions staged per palette colour, so the whole cloud costs one
+  // path and one fill per colour instead of one of each per point. Grown on
+  // demand and reused; across all buckets they hold at most n points.
+  const bucketXY = PALETTE.map(() => new Float32Array(512));
+  const bucketCount = new Int32Array(PALETTE.length);
+
+  function stage(slot, x, y) {
+    const k = bucketCount[slot];
+    let buf = bucketXY[slot];
+    if ((k + 1) * 2 > buf.length) {
+      const grown = new Float32Array(buf.length * 2);
+      grown.set(buf);
+      bucketXY[slot] = buf = grown;
+    }
+    buf[k * 2] = x;
+    buf[k * 2 + 1] = y;
+    bucketCount[slot] = k + 1;
+  }
+
+  /// Paint everything staged, then reset the buckets for the next pass.
+  function flush(radius, alpha) {
+    // Below a couple of pixels a disc and a square are the same smudge, and
+    // the square is far cheaper to tessellate, which matters precisely when
+    // zoomed out, where the radius is smallest and the points are most.
+    const square = radius <= 2;
+    const size = radius * 2;
+    ctx.globalAlpha = alpha;
+    for (let s = 0; s < PALETTE.length; s++) {
+      const k = bucketCount[s];
+      if (k === 0) continue;
+      const buf = bucketXY[s];
+      ctx.beginPath();
+      for (let j = 0; j < k; j++) {
+        const x = buf[j * 2];
+        const y = buf[j * 2 + 1];
+        if (square) {
+          ctx.rect(x - radius, y - radius, size, size);
+        } else {
+          ctx.moveTo(x + radius, y);
+          ctx.arc(x, y, radius, 0, TAU);
+        }
+      }
+      ctx.fillStyle = PALETTE[s];
+      ctx.fill();
+      bucketCount[s] = 0;
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /// Stage every point whose cell overlaps the viewport. Cells are coarse, so
+  /// each candidate still gets an exact bounds test.
+  function stageVisible(radius) {
+    const margin = 10;
+    const x0 = (-margin - view.offsetX) / view.scale;
+    const x1 = (width + margin - view.offsetX) / view.scale;
+    const y0 = (-margin - view.offsetY) / view.scale;
+    const y1 = (height + margin - view.offsetY) / view.scale;
+    // Scale can be negative only if someone inverts the view; guard anyway.
+    const cx0 = col(Math.min(x0, x1));
+    const cx1 = col(Math.max(x0, x1));
+    const cy0 = row(Math.min(y0, y1));
+    const cy1 = row(Math.max(y0, y1));
+
+    const { side, start, order } = grid;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const base = cy * side;
+      // Cells in a row are contiguous in `order`, so one slice covers the
+      // whole span rather than one lookup per cell.
+      const from = start[base + cx0];
+      const to = start[base + cx1 + 1];
+      for (let k = from; k < to; k++) {
+        const i = order[k];
+        const x = screenX(i);
+        if (x < -margin || x > width + margin) continue;
+        const y = screenY(i);
+        if (y < -margin || y > height + margin) continue;
+        stage(genre[i] % PALETTE.length, x, y);
+      }
+    }
+  }
 
   function draw() {
-    const rect = canvas.getBoundingClientRect();
-    ctx.clearRect(0, 0, rect.width, rect.height);
+    ctx.clearRect(0, 0, width, height);
 
     if (!meta.has_layout) {
       ctx.fillStyle = "#8b90a3";
@@ -73,16 +242,16 @@
     // Points. Dimmed when a route is showing, so the path reads clearly.
     const dim = route.length > 0;
     const radius = Math.max(1.5, Math.min(4, view.scale * 0.08));
-    for (let i = 0; i < n; i++) {
-      const [x, y] = toScreen(i);
-      if (x < -10 || y < -10 || x > rect.width + 10 || y > rect.height + 10) continue;
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = PALETTE[genre[i] % PALETTE.length];
-      ctx.globalAlpha = dim && !routeIndex.has(i) ? 0.18 : 0.8;
-      ctx.fill();
+    if (grid) {
+      stageVisible(radius);
+      flush(radius, dim ? 0.18 : 0.8);
+      // The route's own points stay at full strength. A handful of points, so
+      // a second pass is cheaper than branching inside the first.
+      if (dim) {
+        for (const i of route) stage(genre[i] % PALETTE.length, screenX(i), screenY(i));
+        flush(radius, 0.8);
+      }
     }
-    ctx.globalAlpha = 1;
 
     // Route polyline.
     if (route.length > 1) {
@@ -98,7 +267,7 @@
       route.forEach((i, k) => {
         const [x, y] = toScreen(i);
         ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.arc(x, y, 5, 0, TAU);
         ctx.fillStyle = k === 0 ? "#9ece6a" : k === route.length - 1 ? "#f7768e" : "#ffffff";
         ctx.fill();
       });
@@ -106,14 +275,12 @@
 
     // Markers last, selection under hover, so the selected track reads as one
     // marker rather than two.
-    if (selected >= 0) marker(selected, "#ffffff", rect, true);
-    if (hover >= 0 && hover !== selected) marker(hover, "#7aa2f7", rect, false);
+    if (selected >= 0) marker(selected, "#ffffff", true);
+    if (hover >= 0 && hover !== selected) marker(hover, "#7aa2f7", false);
   }
 
-  const TAU = Math.PI * 2;
-
   /// A point worth looking at: halo, ring, core, and what it actually is.
-  function marker(index, colour, rect, persistent) {
+  function marker(index, colour, persistent) {
     const [x, y] = toScreen(index);
 
     // Halo, so the marker separates from a dense cluster.
@@ -150,7 +317,7 @@
     }
 
     const text = (meta.labels && meta.labels[index]) || "";
-    if (text) label(text, x, y, colour, rect);
+    if (text) label(text, x, y, colour);
   }
 
   function roundRect(x, y, w, h, r) {
@@ -165,11 +332,11 @@
 
   /// Name the point, flipping the chip rather than clamping it, a chip
   /// pinned to the edge covers what you are trying to read.
-  function label(text, x, y, colour, rect) {
+  function label(text, x, y, colour) {
     ctx.font = "12px system-ui, -apple-system, sans-serif";
     const padX = 8;
     const h = 22;
-    const maxWidth = Math.min(280, rect.width - 16);
+    const maxWidth = Math.min(280, width - 16);
     let shown = text;
     let w = ctx.measureText(shown).width + padX * 2;
     if (w > maxWidth) {
@@ -182,10 +349,10 @@
 
     let lx = x + 16;
     let ly = y - h - 12;
-    if (lx + w > rect.width - 6) lx = x - w - 16;
+    if (lx + w > width - 6) lx = x - w - 16;
     if (lx < 6) lx = 6;
     if (ly < 6) ly = y + 16;
-    if (ly + h > rect.height - 6) ly = rect.height - h - 6;
+    if (ly + h > height - 6) ly = height - h - 6;
 
     ctx.fillStyle = "rgba(18,19,26,0.94)";
     roundRect(lx, ly, w, h, 6);
@@ -201,17 +368,35 @@
     ctx.fillText(shown, lx + padX, ly + h / 2);
   }
 
-  // Linear scan for the nearest point. At tens of thousands of points this is
-  // well under a frame; swap in a quadtree only if it ever stops being.
+  /// Nearest point to a screen position, searched through the grid. This runs
+  /// on every mousemove, so it must not depend on the size of the corpus:
+  /// only the cells within `maxDistance` are visited.
   function nearest(px, py, maxDistance = 14) {
+    if (!grid) return -1;
+    const reach = maxDistance / view.scale;
+    const lx = (px - view.offsetX) / view.scale;
+    const ly = (py - view.offsetY) / view.scale;
+    const cx0 = col(lx - reach);
+    const cx1 = col(lx + reach);
+    const cy0 = row(ly - reach);
+    const cy1 = row(ly + reach);
+
+    const { side, start, order } = grid;
     let best = -1;
     let bestDistance = maxDistance * maxDistance;
-    for (let i = 0; i < n; i++) {
-      const [x, y] = toScreen(i);
-      const d = (x - px) * (x - px) + (y - py) * (y - py);
-      if (d < bestDistance) {
-        bestDistance = d;
-        best = i;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      const base = cy * side;
+      const from = start[base + cx0];
+      const to = start[base + cx1 + 1];
+      for (let k = from; k < to; k++) {
+        const i = order[k];
+        const dx = screenX(i) - px;
+        const dy = screenY(i) - py;
+        const d = dx * dx + dy * dy;
+        if (d < bestDistance) {
+          bestDistance = d;
+          best = i;
+        }
       }
     }
     return best;
@@ -233,14 +418,14 @@
       view.offsetY += e.offsetY - last.y;
       last = { x: e.offsetX, y: e.offsetY };
       dragMoved = true;
-      draw();
+      schedule();
       return;
     }
     const found = nearest(e.offsetX, e.offsetY);
     if (found !== hover) {
       hover = found;
       canvas.style.cursor = found >= 0 ? "pointer" : "grab";
-      draw();
+      schedule();
     }
   });
 
@@ -253,7 +438,7 @@
     const found = nearest(e.offsetX, e.offsetY);
     if (found >= 0) {
       selected = found;
-      draw();
+      schedule();
       // Small message: exactly what eval is for.
       dioxus.send({ type: "select", track_id: ids[found] });
     }
@@ -265,7 +450,7 @@
     view.offsetX = e.offsetX - (e.offsetX - view.offsetX) * factor;
     view.offsetY = e.offsetY - (e.offsetY - view.offsetY) * factor;
     view.scale *= factor;
-    draw();
+    schedule();
   }, { passive: false });
 
   // ------------------------------------------------------------------ touch
@@ -344,7 +529,7 @@
       pinch = now;
       last = mid;
       dragMoved = true;
-      draw();
+      schedule();
       return;
     }
 
@@ -356,7 +541,7 @@
     if (touchStart && Math.hypot(at.x - touchStart.x, at.y - touchStart.y) > 8) {
       dragMoved = true;
     }
-    draw();
+    schedule();
   }, { passive: false });
 
   canvas.addEventListener("touchend", (e) => {
@@ -376,7 +561,7 @@
       // No cursor means no hover; showing the label for what was just tapped
       // is the closest equivalent.
       hover = found;
-      draw();
+      schedule();
       dioxus.send({ type: "select", track_id: ids[found] });
     }
   }, { passive: true });
@@ -388,91 +573,40 @@
     dragMoved = true;
   }, { passive: true });
 
-  canvas.addEventListener("touchmove", (e) => {
-    e.preventDefault();
-
-    if (e.touches.length >= 2) {
-      const now = spread(e.touches);
-      const mid = centre(e.touches);
-      if (pinch > 0 && now > 0) {
-        const factor = now / pinch;
-        view.offsetX = mid.x - (mid.x - view.offsetX) * factor;
-        view.offsetY = mid.y - (mid.y - view.offsetY) * factor;
-        view.scale *= factor;
-      }
-      pinch = now;
-      last = mid;
-      dragMoved = true;
-      draw();
-      return;
-    }
-
-    const at = centre(e.touches);
-    view.offsetX += at.x - last.x;
-    view.offsetY += at.y - last.y;
-    last = at;
-    // A few pixels of slop, or every tap counts as a drag and never selects.
-    if (touchStart && Math.hypot(at.x - touchStart.x, at.y - touchStart.y) > 8) {
-      dragMoved = true;
-    }
-    draw();
-  }, { passive: false });
-
-  canvas.addEventListener("touchend", (e) => {
-    if (e.touches.length < 2) pinch = 0;
-    if (dragMoved || !touchStart) return;
-
-    const found = nearest(touchStart.x, touchStart.y, 22);
-    if (found >= 0) {
-      selected = found;
-      // No cursor means no hover; showing the label for what was just tapped
-      // is the closest equivalent.
-      hover = found;
-      draw();
-      dioxus.send({ type: "select", track_id: ids[found] });
-    }
-  }, { passive: true });
-
   // Rust calls this when the selection changes elsewhere, the in-space list,
   // an "in space" button, a generated route.
   window.twoKhzSetSelected = (trackId) => {
     if (trackId === null || trackId === undefined) {
       selected = -1;
-      draw();
+      schedule();
       return;
     }
 
-    let found = -1;
-    for (let i = 0; i < n; i++) {
-      if (ids[i] === trackId) {
-        found = i;
-        break;
-      }
-    }
-    if (found < 0) return;
+    const found = byId.get(trackId);
+    if (found === undefined) return;
 
     selected = found;
 
     // Bring it into view, but do not re-centre a point that is already
     // plainly visible.
-    const rect = canvas.getBoundingClientRect();
-    const [x, y] = toScreen(found);
+    const x = screenX(found);
+    const y = screenY(found);
     const margin = 40;
-    if (x < margin || y < margin || x > rect.width - margin || y > rect.height - margin) {
-      view.offsetX += rect.width / 2 - x;
-      view.offsetY += rect.height / 2 - y;
+    // A hidden pane measures 0x0; leave the view alone rather than centring
+    // on a rectangle that does not exist yet.
+    if (width > 0 && height > 0 &&
+        x < margin || y < margin || x > width - margin || y > height - margin) {
+      view.offsetX += width / 2 - x;
+      view.offsetY += height / 2 - y;
     }
 
-    draw();
+    schedule();
   };
 
   // Rust calls this when a path is built. Ids only, tiny payload.
   window.twoKhzSetRoute = (trackIds) => {
-    const position = new Map();
-    for (let i = 0; i < n; i++) position.set(ids[i], i);
-    route = trackIds.map((id) => position.get(id)).filter((i) => i !== undefined);
-    routeIndex = new Map(route.map((i) => [i, true]));
-    draw();
+    route = trackIds.map((id) => byId.get(id)).filter((i) => i !== undefined);
+    schedule();
   };
 
   // Rust calls this after the block list changes. Selection and route are
@@ -482,8 +616,7 @@
     selected = -1;
     hover = -1;
     route = [];
-    routeIndex = new Map();
-    draw();
+    schedule();
     // The indices changed, but the track id did not; re-resolve it rather
     // than leaving the map unmarked after every rebuild.
     const wanted = window.twoKhzSelected;
