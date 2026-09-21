@@ -323,6 +323,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Off, or build-push-action drops a .dockerbuild artifact into the run and
+    # the release job has one more thing to filter out. The summary it feeds
+    # is not worth an artifact nobody downloads.
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: false
 
     steps:
       - uses: actions/checkout@v7
@@ -414,6 +419,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      DOCKER_BUILD_RECORD_UPLOAD: false
 
     steps:
       - uses: actions/checkout@v7
@@ -457,9 +464,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      # `pattern` is not optional: the docker jobs' build-push-action uploads
+      # a .dockerbuild build record into the same run, and an unfiltered
+      # download both fails on it and would attach it as a release asset.
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
+          pattern: ubuntu-*
       - run: ls -lhR artifacts
       - uses: softprops/action-gh-release@v3
         with:
