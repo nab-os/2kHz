@@ -356,8 +356,14 @@ jobs:
           # `type=ref` first and unconditionally: the tags here are `v0.5`,
           # not `v0.5.0`, and type=semver declines anything without a patch
           # component. Without it a release would publish `latest` alone.
+          #
+          # branch and pr matter even though neither is ever pushed: with no
+          # tag at all the build produces an unnamed image, and the smoke test
+          # below has nothing to run.
           tags: |
             type=ref,event=tag
+            type=ref,event=branch
+            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
@@ -379,10 +385,21 @@ jobs:
 
       # Cheap proof the binary in the image actually runs: it opens the
       # database, finds no devices and says so.
+      #
+      # The reference comes from the metadata step rather than being written
+      # out here. A literal `4gjr3z1t/2khz:latest` reads as the same thing and
+      # is not: docker would pull the published tag and test that instead of
+      # the image just built, passing even on a Dockerfile that cannot build.
       - name: Smoke test
         if: github.ref_type != 'tag'
         run: |
-          docker run --rm docker.io/4gjr3z1t/2khz:latest devices
+          IMAGE=$(head -1 <<< "$DOCKER_METADATA_OUTPUT_TAGS")
+          if [ -z "$IMAGE" ]; then
+            echo "no tag was generated; the built image has no name" >&2
+            exit 1
+          fi
+          echo "testing $IMAGE"
+          docker run --rm "$IMAGE" devices
 
   # ------------------------------------------------- docker (the big one)
   #
