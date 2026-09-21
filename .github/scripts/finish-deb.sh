@@ -4,13 +4,18 @@
 # Dioxus bundler leaves blank. Depends comes from dpkg-shlibdeps, not a fixed
 # list, 24.04's time_t transition renamed libgtk-3-0 and friends to -t64.
 #
-# Usage: finish-deb.sh <staging-root> <output.deb> <maintainer>
+# Version is set here too when given: dx stamps the .deb from Cargo.toml, which
+# is not bumped per commit, so the package would claim 0.1.0 whatever the
+# filename says.
+#
+# Usage: finish-deb.sh <staging-root> <output.deb> <maintainer> [version]
 
 set -euo pipefail
 
-ROOT=${1:?usage: finish-deb.sh <staging-root> <output.deb> <maintainer>}
+ROOT=${1:?usage: finish-deb.sh <staging-root> <output.deb> <maintainer> [version]}
 OUT=${2:?missing output path}
 MAINTAINER=${3:?missing maintainer}
+VERSION=${4:-}
 
 [ -f "$ROOT/DEBIAN/control" ] || { echo "no DEBIAN/control under $ROOT" >&2; exit 1; }
 
@@ -36,11 +41,14 @@ DEPENDS=$(cd "$WORK" && dpkg-shlibdeps -O --ignore-missing-info "${BINS[@]}" 2>/
 [ -n "$DEPENDS" ] || { echo "dpkg-shlibdeps produced no dependencies" >&2; exit 1; }
 echo "  depends:  $DEPENDS"
 
-CONTROL="$ROOT/DEBIAN/control" DEPENDS="$DEPENDS" MAINTAINER="$MAINTAINER" python3 - <<'PY'
+CONTROL="$ROOT/DEBIAN/control" DEPENDS="$DEPENDS" MAINTAINER="$MAINTAINER" \
+VERSION="$VERSION" python3 - <<'PY'
 import os
 
 path = os.environ["CONTROL"]
 fields = {"Maintainer": os.environ["MAINTAINER"], "Depends": os.environ["DEPENDS"]}
+if os.environ.get("VERSION"):
+    fields["Version"] = os.environ["VERSION"]
 
 out, seen = [], set()
 for line in open(path).read().splitlines():

@@ -60,11 +60,22 @@ jobs:
       - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y --locked dioxus-cli@${{ env.DX_VERSION }}
 
+      # A tag is the version. Everything else gets the crate version plus a
+      # build id, because Cargo.toml is not bumped per commit and every
+      # artifact would otherwise be called 0.1.0 forever.
+      #
+      # `+build<n>.g<sha>` is a valid Debian upstream version and sorts *after*
+      # the plain crate version, which is what an untagged build off main is.
       - name: Work out the version and artifact suffix
         id: v
         run: |
-          VERSION=$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)
-          echo "version=$VERSION"          >> "$GITHUB_OUTPUT"
+          CRATE=$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${CRATE}+build${{ github.run_number }}.g$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION"                   >> "$GITHUB_OUTPUT"
           echo "suffix=ubuntu-${{ matrix.ubuntu }}" >> "$GITHUB_OUTPUT"
           echo "packaging $VERSION for ubuntu ${{ matrix.ubuntu }}"
 
@@ -100,7 +111,7 @@ jobs:
           dpkg-deb -R staging/*_amd64.deb debroot
           .github/scripts/finish-deb.sh debroot \
             "dist/two-khz_${{ steps.v.outputs.version }}_amd64.${{ steps.v.outputs.suffix }}.deb" \
-            "$MAINTAINER"
+            "$MAINTAINER" "${{ steps.v.outputs.version }}"
           rm -f staging/*_amd64.deb
 
       - name: Build the server .deb
@@ -128,7 +139,7 @@ jobs:
           EOF
           .github/scripts/finish-deb.sh "$R" \
             "dist/two-khz-server_${{ steps.v.outputs.version }}_amd64.${{ steps.v.outputs.suffix }}.deb" \
-            "$MAINTAINER"
+            "$MAINTAINER" "${{ steps.v.outputs.version }}"
 
       - name: Build the tarballs
         run: |
