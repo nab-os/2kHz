@@ -5047,6 +5047,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -6213,6 +6214,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "two-khz-app"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "anyhow",
+ "bytemuck",
+ "dioxus",
+ "futures-util",
+ "libc",
+ "log",
+ "md-5",
+ "memmap2",
+ "ort",
+ "reqwest 0.13.5",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6503,28 +6527,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "two-khz-app"
-version = "0.1.0"
-dependencies = [
- "android_logger",
- "anyhow",
- "bytemuck",
- "dioxus",
- "futures-util",
- "libc",
- "log",
- "md-5",
- "memmap2",
- "ort",
- "reqwest 0.13.5",
- "rusqlite",
- "serde",
- "serde_json",
- "tokenizers",
- "tokio",
 ]
 
 [[package]]

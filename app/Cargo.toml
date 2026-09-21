@@ -57,6 +57,14 @@ memmap2 = "0.9"
 # rather than polling it.
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "query", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
+# Never named in the source: reqwest takes rustls with default features off,
+# which drops `prefer-post-quantum` and leaves X25519MLKEM768 advertised in
+# `supported_groups` with no matching key share. A server that prefers that
+# group then has to answer with a HelloRetryRequest, and an ingress that
+# mishandles one closes the connection mid-handshake. Naming rustls here turns
+# the feature back on through unification, so the first flight already carries
+# the post-quantum key share and the handshake needs one round trip.
+rustls = { version = "0.23.45", features = ["prefer-post-quantum"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time"] }
