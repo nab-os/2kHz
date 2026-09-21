@@ -16,12 +16,12 @@ services:
   server:
     # Pinned rather than `latest`, so that `compose pull` on a bad day cannot
     # swap the running server for a release nobody here has tried.
-    image: 4gjr3z1t/2khz:v0.6
+    image: 4gjr3z1t/2khz:v0.6.1
 
     # Running analyse/layout on this machine as well? That is the other image,
     # several GB and GHCR-only:
     #
-    #   image: ghcr.io/nab-os/two-khz-server:v0.6-pipeline
+    #   image: ghcr.io/nab-os/two-khz-server:v0.6.1-pipeline
     #
     # Building locally instead of pulling: the only way to run uncommitted
     # changes, is this in place of `image:` above:

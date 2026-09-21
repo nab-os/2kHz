@@ -6214,7 +6214,7 @@ dependencies = [
 
 [[package]]
 name = "two-khz-app"
-version = "0.1.0"
+version = "0.6.1"
 dependencies = [
  "android_logger",
  "anyhow",
