@@ -231,7 +231,7 @@ not need a Rust toolchain or a `uv` of its own.
 
 ```sh
 docker run -d --init --name two-khz -p 127.0.0.1:7700:7700 \
-  -v two-khz-data:/data --env-file .env 4gjr3z1t/2khz:v0.6
+  -v two-khz-data:/data --env-file .env 4gjr3z1t/2khz:v0.6.1
 
 docker exec two-khz two-khz-server pair --name phone --scope play
 ```
@@ -243,8 +243,8 @@ Two targets, because the analysis stack is not small:
 
 | image | what it carries | size |
 |---|---|---|
-| `4gjr3z1t/2khz:v0.6` | the API, the Rust crawler, `embed` | 266MB on disk, 70MB to pull |
-| `ghcr.io/nab-os/two-khz-server:v0.6-pipeline` | the above plus uv, ffmpeg and the Python stages | 3.8GB to pull, torch and essentia-tensorflow |
+| `4gjr3z1t/2khz:v0.6.1` | the API, the Rust crawler, `embed` | 266MB on disk, 70MB to pull |
+| `ghcr.io/nab-os/two-khz-server:v0.6.1-pipeline` | the above plus uv, ffmpeg and the Python stages | 3.8GB to pull, torch and essentia-tensorflow |
 
 Both carry moving tags too, `:latest` and `:pipeline`, but everything here
 pins a version, so that pulling never silently changes the server underneath a
