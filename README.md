@@ -224,6 +224,55 @@ behind WireGuard/Tailscale or a TLS proxy.
 A stage started from a client **outlives that client**, so **stop** is the only
 thing that ends one early.
 
+## Docker
+
+The server half ships as an image, so the machine that hosts the pipeline does
+not need a Rust toolchain or a `uv` of its own.
+
+```sh
+docker run -d --init --name two-khz -p 127.0.0.1:7700:7700 \
+  -v two-khz-data:/data --env-file .env 4gjr3z1t/2khz:latest
+
+docker exec two-khz two-khz-server pair --name phone --scope play
+```
+
+[`compose.yaml`](compose.yaml) is the worked version, pairing, the slim
+catalogue, the volumes and the loopback-only port mapping.
+
+Two targets, because the analysis stack is not small:
+
+| target | what it carries | size |
+|---|---|---|
+| `server` | the API, the Rust crawler, `embed` | 266MB |
+| `pipeline` | the above plus uv, ffmpeg and the Python stages | 1.6GB, several more with `extract` |
+
+`latest` is the slim one. Starting a **Python** stage on it fails with `could
+not start uv`; crawling, syncing, browsing and text steering all work, because
+those are Rust. Reach for `:pipeline` on the machine that actually analyses,
+and keep in mind it is x86_64-only, `essentia-tensorflow` publishes exactly
+one wheel, cp312 manylinux x86_64.
+
+The container binds `0.0.0.0` and publishes to `127.0.0.1`, which keeps the
+loopback property the rest of this section describes: the bind has to be
+`0.0.0.0` to be reachable across the container boundary at all, so it is the
+*published* port that is restricted.
+
+Three things about the image are load-bearing rather than arbitrary, and are
+commented where they occur in the [`Dockerfile`](Dockerfile):
+
+- **`/app`.** `repo_root()` is `CARGO_MANIFEST_DIR` resolved at compile time
+  and Python takes `REPO_ROOT` from its own `__file__`, so the build path and
+  the run path must be the same one.
+- **`/app/data` is a symlink to `/data`.** Rust honours `TWO_KHZ_MODEL_DIR`,
+  but `features/models.py` hardcodes `REPO_ROOT/data/models`. The symlink is
+  what stops the 479MB CLAP tower being stored twice.
+- **`UV_NO_SYNC=1`.** Everything is installed at build time; without it every
+  stage start would try to re-sync and fail whenever the index is unreachable.
+
+Credentials never enter the image, `.env` is in `.dockerignore`, and the
+corpus, the space and the device tokens all live in the `/data` volume, which
+is the only thing here worth a backup.
+
 ## Android
 
 Remote-only by construction: there is no Essentia on a phone, no `uv` to spawn,
@@ -259,9 +308,16 @@ on demand. A tag additionally opens a GitHub release with everything attached.
 | Ubuntu 24.04 | `.deb`, `.AppImage`, `.tar.gz`, desktop and server separately |
 | Ubuntu 26.04 | the same, built on 26.04 |
 | Android | one signed arm64 `.apk`, **currently disabled** |
+| Docker | `4gjr3z1t/2khz` and `ghcr.io/…/two-khz-server`, plus `:pipeline` on GHCR alone |
 
 Each Ubuntu release builds on its own runner, and the desktop and server
 packages are separate, see [docs/design.md](docs/design.md#packaging).
+
+The image is built on every push so a broken `Dockerfile` fails next to the
+`.deb`s, but only pushed from a tag. It needs `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` as repository secrets; the GHCR half uses `GITHUB_TOKEN` and
+needs nothing. The `pipeline` image goes to GHCR only, several GB, and no
+pull limit there.
 
 The Android job is switched off (`if: false`) rather than deleted. Re-enabling
 it is the one-line change described in the comment above the job, plus the
