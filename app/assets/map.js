@@ -3,10 +3,18 @@
 // Owns rendering and all pan/zoom/hover, so dragging never crosses into Rust.
 // Points arrive once as binary; only selections go back.
 //
-// At ~30k points the naive shapes of this file all became visible on a slow
-// machine: a fill per point, a full scan per mousemove, a draw per event. The
-// three structures below, a uniform grid, per-colour batching, and a
-// frame-coalesced draw, exist only to keep those costs off the drag path.
+// The shape of this file is dictated by one measurement. In WebKitGTK, which
+// is what the desktop webview is, filling 28k small paths costs ~300ms a frame
+// and batching them into one path per colour costs ~1100ms, Cairo tessellates
+// a 28k-subpath far worse than it rasterises 28k small ones. Canvas path APIs
+// simply cannot draw this many points at interactive rates.
+//
+// So the cloud is not drawn per frame. It is rasterised once, by hand, into an
+// offscreen buffer covering the viewport plus a margin, and every frame after
+// that is a blit of that buffer: ~2ms to pan, ~9ms to zoom. The buffer is
+// rebuilt only when the gesture settles at a new scale or the pan runs off its
+// edge. Overlays, route, markers, labels, are a handful of shapes and stay
+// on the normal canvas API, drawn on top each frame.
 
 (async () => {
   const canvas = document.getElementById("map");
@@ -17,6 +25,11 @@
     "#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7",
     "#7dcfff", "#ff9e64", "#73daca", "#c0caf5", "#b4f9f8",
   ];
+  const RGB = PALETTE.map((h) => [
+    parseInt(h.slice(1, 3), 16),
+    parseInt(h.slice(3, 5), 16),
+    parseInt(h.slice(5, 7), 16),
+  ]);
 
   const TAU = Math.PI * 2;
 
@@ -25,6 +38,15 @@
   let meta, n, ids, xy, genre;
   // Track id -> point index. Rebuilt with the points, because the indices move.
   let byId = new Map();
+
+  // The offscreen rasterisation of every visible point, in device pixels;
+  // filled in by the cloud layer below. Declared up here because the initial
+  // `loadPoints` invalidates it before that section is reached.
+  const cloud = {
+    canvas: null, ctx: null, img: null, bgRow: null,
+    w: 0, h: 0, offX: 0, offY: 0,
+    scale: 0, dpr: 0, dim: false, valid: false,
+  };
 
   async function loadPoints() {
     meta = await (await fetch("/points/meta")).json();
@@ -37,6 +59,7 @@
     byId = new Map();
     for (let i = 0; i < n; i++) byId.set(ids[i], i);
     buildGrid();
+    cloud.valid = false;
   }
 
   // ------------------------------------------------------------------- grid
@@ -106,6 +129,8 @@
   let width = 0;
   let height = 0;
 
+  const ratio = () => window.devicePixelRatio || 1;
+
   function measure() {
     const rect = canvas.getBoundingClientRect();
     width = rect.width;
@@ -114,11 +139,12 @@
   }
 
   function resize() {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = ratio();
     const rect = measure();
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cloud.valid = false;
     draw();
   }
 
@@ -130,11 +156,14 @@
     view.scale = Math.min((rect.width - pad * 2) / spanX, (rect.height - pad * 2) / spanY);
     view.offsetX = pad - meta.bounds.min_x * view.scale;
     view.offsetY = pad - meta.bounds.min_y * view.scale;
+    cloud.valid = false;
   }
 
   const screenX = (i) => xy[i * 2] * view.scale + view.offsetX;
   const screenY = (i) => xy[i * 2 + 1] * view.scale + view.offsetY;
   const toScreen = (i) => [screenX(i), screenY(i)];
+
+  const pointRadius = (scale) => Math.max(1.5, Math.min(4, scale * 0.08));
 
   // A pan or a wheel tick can fire several times between two frames. Painting
   // each one is wasted work that arrives on screen as lag, so collapse them.
@@ -148,109 +177,270 @@
     });
   }
 
-  // Screen positions staged per palette colour, so the whole cloud costs one
-  // path and one fill per colour instead of one of each per point. Grown on
-  // demand and reused; across all buckets they hold at most n points.
-  const bucketXY = PALETTE.map(() => new Float32Array(512));
-  const bucketCount = new Int32Array(PALETTE.length);
+  // ------------------------------------------------------------- cloud layer
+  //
+  // `cloud` itself is declared at the top of the file. `offX`/`offY` put a
+  // layout coordinate into it: px = x * scale * dpr + offX.
 
-  function stage(slot, x, y) {
-    const k = bucketCount[slot];
-    let buf = bucketXY[slot];
-    if ((k + 1) * 2 > buf.length) {
-      const grown = new Float32Array(buf.length * 2);
-      grown.set(buf);
-      bucketXY[slot] = buf = grown;
-    }
-    buf[k * 2] = x;
-    buf[k * 2 + 1] = y;
-    bucketCount[slot] = k + 1;
+  // The panel colour behind the canvas. The buffer is opaque, which turns
+  // alpha compositing into a plain lerp with no per-pixel division.
+  let background = null;
+  function readBackground() {
+    const host = canvas.parentElement || canvas;
+    const parsed = (getComputedStyle(host).backgroundColor || "").match(/[\d.]+/g);
+    background = parsed && parsed.length >= 3
+      ? [+parsed[0], +parsed[1], +parsed[2]]
+      : [26, 27, 38];
   }
 
-  /// Paint everything staged, then reset the buckets for the next pass.
-  function flush(radius, alpha) {
-    // Below a couple of pixels a disc and a square are the same smudge, and
-    // the square is far cheaper to tessellate, which matters precisely when
-    // zoomed out, where the radius is smallest and the points are most.
-    const square = radius <= 2;
-    const size = radius * 2;
-    ctx.globalAlpha = alpha;
-    for (let s = 0; s < PALETTE.length; s++) {
-      const k = bucketCount[s];
-      if (k === 0) continue;
-      const buf = bucketXY[s];
-      ctx.beginPath();
-      for (let j = 0; j < k; j++) {
-        const x = buf[j * 2];
-        const y = buf[j * 2 + 1];
-        if (square) {
-          ctx.rect(x - radius, y - radius, size, size);
-        } else {
-          ctx.moveTo(x + radius, y);
-          ctx.arc(x, y, radius, 0, TAU);
+  // A circular coverage kernel, supersampled for a soft edge and premultiplied
+  // by the layer's alpha. Rebuilt only when the radius or the dimming changes.
+  let stamp = null;
+  function stampFor(radius, alpha) {
+    if (stamp && stamp.radius === radius && stamp.alpha === alpha) return stamp;
+    const side = Math.ceil(radius * 2) + 2;
+    const half = side / 2;
+    const cov = new Uint8Array(side * side);
+    const rowFrom = new Int32Array(side);
+    const rowTo = new Int32Array(side);
+    for (let y = 0; y < side; y++) {
+      let from = -1, to = 0;
+      for (let x = 0; x < side; x++) {
+        let hits = 0;
+        for (let sy = 0; sy < 3; sy++) {
+          for (let sx = 0; sx < 3; sx++) {
+            const dx = x + (sx + 0.5) / 3 - half;
+            const dy = y + (sy + 0.5) / 3 - half;
+            if (dx * dx + dy * dy <= radius * radius) hits++;
+          }
+        }
+        const a = Math.round((hits / 9) * alpha * 255);
+        cov[y * side + x] = a;
+        if (a > 0) {
+          if (from < 0) from = x;
+          to = x + 1;
         }
       }
-      ctx.fillStyle = PALETTE[s];
-      ctx.fill();
-      bucketCount[s] = 0;
+      rowFrom[y] = from < 0 ? 0 : from;
+      rowTo[y] = from < 0 ? 0 : to;
     }
-    ctx.globalAlpha = 1;
+    stamp = { radius, alpha, side, cov, rowFrom, rowTo, off: Math.floor(side / 2) };
+    return stamp;
   }
 
-  /// Stage every point whose cell overlaps the viewport. Cells are coarse, so
-  /// each candidate still gets an exact bounds test.
-  function stageVisible(radius) {
-    const margin = 10;
-    const x0 = (-margin - view.offsetX) / view.scale;
-    const x1 = (width + margin - view.offsetX) / view.scale;
-    const y0 = (-margin - view.offsetY) / view.scale;
-    const y1 = (height + margin - view.offsetY) / view.scale;
-    // Scale can be negative only if someone inverts the view; guard anyway.
-    const cx0 = col(Math.min(x0, x1));
-    const cx1 = col(Math.max(x0, x1));
-    const cy0 = row(Math.min(y0, y1));
-    const cy1 = row(Math.max(y0, y1));
+  /// Rasterise every point that falls inside the buffer, by hand.
+  function renderCloud() {
+    const dpr = ratio();
+    const vw = Math.max(1, Math.round(width * dpr));
+    const vh = Math.max(1, Math.round(height * dpr));
 
-    const { side, start, order } = grid;
-    for (let cy = cy0; cy <= cy1; cy++) {
-      const base = cy * side;
-      // Cells in a row are contiguous in `order`, so one slice covers the
-      // whole span rather than one lookup per cell.
-      const from = start[base + cx0];
-      const to = start[base + cx1 + 1];
-      for (let k = from; k < to; k++) {
-        const i = order[k];
-        const x = screenX(i);
-        if (x < -margin || x > width + margin) continue;
-        const y = screenY(i);
-        if (y < -margin || y > height + margin) continue;
-        stage(genre[i] % PALETTE.length, x, y);
+    // Half a viewport of margin each way, so an ordinary drag never runs off
+    // the buffer. Trimmed if that would make it an absurd amount of memory.
+    let mx = 0, my = 0;
+    for (const f of [0.5, 0.35, 0.2, 0.1, 0]) {
+      mx = Math.round(vw * f);
+      my = Math.round(vh * f);
+      if ((vw + 2 * mx) * (vh + 2 * my) <= 4.5e6) break;
+    }
+    const cw = vw + 2 * mx;
+    const ch = vh + 2 * my;
+
+    if (!cloud.canvas) cloud.canvas = document.createElement("canvas");
+    if (cloud.w !== cw || cloud.h !== ch) {
+      cloud.canvas.width = cw;
+      cloud.canvas.height = ch;
+      cloud.ctx = cloud.canvas.getContext("2d");
+      cloud.img = cloud.ctx.createImageData(cw, ch);
+      cloud.bgRow = null;
+      cloud.w = cw;
+      cloud.h = ch;
+    }
+    if (!background) readBackground();
+    if (!cloud.bgRow) {
+      cloud.bgRow = new Uint8ClampedArray(cw * 4);
+      for (let o = 0; o < cloud.bgRow.length; o += 4) {
+        cloud.bgRow[o] = background[0];
+        cloud.bgRow[o + 1] = background[1];
+        cloud.bgRow[o + 2] = background[2];
+        cloud.bgRow[o + 3] = 255;
       }
     }
+
+    const d = cloud.img.data;
+    const rowBytes = cw * 4;
+    for (let y = 0; y < ch; y++) d.set(cloud.bgRow, y * rowBytes);
+
+    const dim = route.length > 0;
+    const S = view.scale * dpr;
+    const offX = view.offsetX * dpr + mx;
+    const offY = view.offsetY * dpr + my;
+
+    if (grid && n > 0) {
+      const { side: gside, start, order } = grid;
+      const k = stampFor(pointRadius(view.scale) * dpr, dim ? 0.18 : 0.8);
+      const { side, cov, rowFrom, rowTo, off } = k;
+
+      // Layout-space extent of the buffer, widened by one stamp so a point
+      // just outside still contributes the half of itself that shows.
+      const pad = side;
+      const lx0 = (-pad - offX) / S;
+      const lx1 = (cw + pad - offX) / S;
+      const ly0 = (-pad - offY) / S;
+      const ly1 = (ch + pad - offY) / S;
+      const cx0 = col(Math.min(lx0, lx1));
+      const cx1 = col(Math.max(lx0, lx1));
+      const cy0 = row(Math.min(ly0, ly1));
+      const cy1 = row(Math.max(ly0, ly1));
+
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const base = cy * gside;
+        // Cells in a row are contiguous in `order`, so one slice covers the
+        // whole span rather than one lookup per cell.
+        const from = start[base + cx0];
+        const to = start[base + cx1 + 1];
+        for (let q = from; q < to; q++) {
+          const i = order[q];
+          const x0 = Math.round(xy[i * 2] * S + offX) - off;
+          const y0 = Math.round(xy[i * 2 + 1] * S + offY) - off;
+          if (x0 + side <= 0 || y0 + side <= 0 || x0 >= cw || y0 >= ch) continue;
+
+          const c = RGB[genre[i] % PALETTE.length];
+          const cr = c[0], cg = c[1], cb = c[2];
+          const yA = y0 < 0 ? -y0 : 0;
+          const yB = y0 + side > ch ? ch - y0 : side;
+          for (let yy = yA; yy < yB; yy++) {
+            let a0 = rowFrom[yy], a1 = rowTo[yy];
+            if (x0 + a0 < 0) a0 = -x0;
+            if (x0 + a1 > cw) a1 = cw - x0;
+            if (a0 >= a1) continue;
+            const crow = yy * side;
+            let o = ((y0 + yy) * cw + x0 + a0) * 4;
+            for (let xx = a0; xx < a1; xx++, o += 4) {
+              const a = cov[crow + xx];
+              d[o] += ((cr - d[o]) * a) >> 8;
+              d[o + 1] += ((cg - d[o + 1]) * a) >> 8;
+              d[o + 2] += ((cb - d[o + 2]) * a) >> 8;
+            }
+          }
+        }
+      }
+    }
+
+    cloud.ctx.putImageData(cloud.img, 0, 0);
+    cloud.offX = offX;
+    cloud.offY = offY;
+    cloud.scale = view.scale;
+    cloud.dpr = dpr;
+    cloud.dim = dim;
+    cloud.valid = true;
+    builtAt = performance.now();
+  }
+
+  /// Whether the buffer still reaches every corner of the viewport. When it
+  /// does not, part of the screen has no points to show at all, which is worth
+  /// a rebuild mid-gesture; merely being the wrong scale is not.
+  function cloudCovers() {
+    if (!cloud.valid) return false;
+    const dpr = ratio();
+    if (cloud.dpr !== dpr) return false;
+    const k = view.scale / cloud.scale;
+    const dx = view.offsetX * dpr - cloud.offX * k;
+    const dy = view.offsetY * dpr - cloud.offY * k;
+    return dx <= 0 && dy <= 0 &&
+      dx + cloud.w * k >= width * dpr &&
+      dy + cloud.h * k >= height * dpr;
+  }
+
+  /// True when the buffer no longer describes what should be on screen.
+  function cloudStale() {
+    if (!cloud.valid) return true;
+    if (cloud.dpr !== ratio()) return true;
+    if (cloud.dim !== (route.length > 0)) return true;
+    if (cloud.scale !== view.scale) return true;
+    return !cloudCovers();
+  }
+
+  /// Put the buffer on screen. A pure pan is a 1:1 crop; mid-zoom it is a
+  /// scaled blit of a buffer built for a different scale, which is soft for
+  /// the length of the gesture and sharp again the moment it settles.
+  function blitCloud() {
+    const dpr = cloud.dpr;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (cloud.scale === view.scale && dpr === ratio()) {
+      let sx = Math.round(cloud.offX - view.offsetX * dpr);
+      let sy = Math.round(cloud.offY - view.offsetY * dpr);
+      let sw = Math.round(width * dpr);
+      let sh = Math.round(height * dpr);
+      let dx = 0, dy = 0;
+      if (sx < 0) { dx = -sx; sw += sx; sx = 0; }
+      if (sy < 0) { dy = -sy; sh += sy; sy = 0; }
+      if (sx + sw > cloud.w) sw = cloud.w - sx;
+      if (sy + sh > cloud.h) sh = cloud.h - sy;
+      if (sw > 0 && sh > 0) {
+        ctx.drawImage(cloud.canvas, sx, sy, sw, sh, dx, dy, sw, sh);
+      }
+    } else {
+      const now = ratio();
+      const k = (view.scale * now) / (cloud.scale * dpr);
+      const dx = view.offsetX * now - cloud.offX * k;
+      const dy = view.offsetY * now - cloud.offY * k;
+      ctx.drawImage(cloud.canvas, dx, dy, cloud.w * k, cloud.h * k);
+    }
+    ctx.restore();
+  }
+
+  // Rebuilding costs tens of milliseconds, so it waits for the gesture to
+  // stop rather than landing in the middle of one.
+  let settle = 0;
+  let builtAt = 0;
+  function rebuildWhenIdle() {
+    clearTimeout(settle);
+    settle = setTimeout(() => {
+      if (cloudStale()) {
+        renderCloud();
+        draw();
+      }
+    }, 90);
   }
 
   function draw() {
-    ctx.clearRect(0, 0, width, height);
-
     if (!meta.has_layout) {
+      ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = "#8b90a3";
       ctx.font = "13px system-ui, sans-serif";
       ctx.fillText("No layout yet, run: uv run two-khz layout", 20, 30);
       return;
     }
 
-    // Points. Dimmed when a route is showing, so the path reads clearly.
+    // First paint has nothing to blit, so it pays for the buffer up front.
+    // After that, a rebuild mid-gesture is only worth its cost when the drag
+    // has run off the edge of the buffer and the alternative is bare panel.
+    // Rate-limited, or a fast flick spends every frame rebuilding.
+    if (!cloud.valid) {
+      renderCloud();
+    } else if (!cloudCovers() && performance.now() - builtAt > 120) {
+      renderCloud();
+    }
+    blitCloud();
+    if (cloudStale()) rebuildWhenIdle();
+
     const dim = route.length > 0;
-    const radius = Math.max(1.5, Math.min(4, view.scale * 0.08));
-    if (grid) {
-      stageVisible(radius);
-      flush(radius, dim ? 0.18 : 0.8);
-      // The route's own points stay at full strength. A handful of points, so
-      // a second pass is cheaper than branching inside the first.
-      if (dim) {
-        for (const i of route) stage(genre[i] % PALETTE.length, screenX(i), screenY(i));
-        flush(radius, 0.8);
+
+    // The route's own points stay at full strength while the rest is dimmed.
+    // A handful of points, so the normal canvas API is fine here.
+    if (dim) {
+      const radius = pointRadius(view.scale);
+      ctx.globalAlpha = 0.8;
+      for (const i of route) {
+        ctx.beginPath();
+        ctx.arc(screenX(i), screenY(i), radius, 0, TAU);
+        ctx.fillStyle = PALETTE[genre[i] % PALETTE.length];
+        ctx.fill();
       }
+      ctx.globalAlpha = 1;
     }
 
     // Route polyline.
@@ -595,7 +785,7 @@
     // A hidden pane measures 0x0; leave the view alone rather than centring
     // on a rectangle that does not exist yet.
     if (width > 0 && height > 0 &&
-        x < margin || y < margin || x > width - margin || y > height - margin) {
+        (x < margin || y < margin || x > width - margin || y > height - margin)) {
       view.offsetX += width / 2 - x;
       view.offsetY += height / 2 - y;
     }
