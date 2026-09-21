@@ -47,6 +47,21 @@ cd pipeline
 uv sync --extra extract --extra layout
 ```
 
+The app draws into a system webview, so on Linux it also wants GTK and webkit
+headers at build time, without them the build stops at `glib-sys` with
+`glib-2.0 was not found in the pkg-config search path`. `libwebkit2gtk-4.1` is
+what wry links against; `libxdo` and the appindicator arrive via tao and
+tray-icon:
+
+```sh
+sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev \
+  libgtk-3-dev libsoup-3.0-dev libxdo-dev libayatana-appindicator3-dev \
+  librsvg2-dev libssl-dev
+```
+
+The headless half needs none of it: the server and the crawler build with
+`--no-default-features --features local`, which keeps dioxus, wry and GTK out.
+
 ### Credentials
 
 Qobuz does not issue API credentials to individuals, and since April 2026 its
