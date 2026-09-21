@@ -248,3 +248,31 @@ is stored in `server.json` beside the synced space.
 Use `dx`, not `cargo android build`, the two generate conflicting JNI
 trampolines. `gen/`, `mobile.toml` and the `[package.metadata.cargo-android]`
 block are leftovers from `cargo mobile init` and are unused.
+
+## Packages
+
+`.github/workflows/build.yml` builds on every push to `main`, on `v*` tags, and
+on demand. A tag additionally opens a GitHub release with everything attached.
+
+| target | artifacts |
+|---|---|
+| Ubuntu 24.04 | `.deb`, `.AppImage`, `.tar.gz`, desktop and server separately |
+| Ubuntu 26.04 | the same, built on 26.04 |
+| Android | one signed arm64 `.apk` |
+
+Each Ubuntu release builds on its own runner, and the desktop and server
+packages are separate, see [docs/design.md](docs/design.md#packaging).
+
+
+### Signing the APK
+
+```sh
+keytool -genkeypair -v -keystore two-khz.jks -alias two-khz \
+  -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 two-khz.jks        # → ANDROID_KEYSTORE_BASE64
+```
+
+Then set `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` as repository secrets. **Keep the
+`.jks`**, Android identifies an app by its signing key, so losing it means no
+existing install can ever be upgraded.

@@ -11,3 +11,28 @@ title = "2kHz"
 [bundle]
 identifier = "fr.glargh.twokhz"
 publisher = "two_khz"
+
+# Without these the bundler falls back to the stock Dioxus logo, and drops a
+# stray `.dx-default-icon.png` at the root of the .deb's filesystem.
+icon = [
+    "assets/icons/32x32.png",
+    "assets/icons/64x64.png",
+    "assets/icons/128x128.png",
+    "assets/icons/256x256.png",
+    "assets/icons/512x512.png",
+]
+category = "Music"
+short_description = "Browse a Qobuz library as a space you can walk through"
+long_description = """
+2kHz analyses a music library with Essentia and CLAP, lays the result out with
+UMAP, and lets you navigate the space directly: nearest neighbours, a radio
+walk, a path between two tracks, or a slow drift. Weights are applied at query
+time, so the sliders are live.
+"""
+homepage = "https://github.com/nab-os/2kHz"
+
+# `depends` is computed per-release by dpkg-shlibdeps in CI: the package names
+# differ between Ubuntu releases.
+[bundle.deb]
+section = "sound"
+priority = "optional"
