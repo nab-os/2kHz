@@ -1,7 +1,7 @@
 # An example deployment of the server half. Copy it, adjust it, then:
 #
 #   cp .env.example .env                                  # Qobuz credentials
-#   docker compose build
+#   docker compose pull
 #   docker compose run --rm server pair --name desktop --scope pipeline
 #   docker compose run --rm server build-catalog          # the slim copy
 #   docker compose up -d
@@ -14,12 +14,21 @@ name: two-khz
 
 services:
   server:
-    build:
-      context: .
-      # `pipeline` instead if this machine is also to run analyse/layout.
-      # Several GB, x86_64 only.
-      target: server
-    image: two-khz-server:local
+    # Pinned rather than `latest`, so that `compose pull` on a bad day cannot
+    # swap the running server for a release nobody here has tried.
+    image: 4gjr3z1t/2khz:v0.6
+
+    # Running analyse/layout on this machine as well? That is the other image,
+    # several GB and GHCR-only:
+    #
+    #   image: ghcr.io/nab-os/two-khz-server:pipeline
+    #
+    # Building locally instead of pulling: the only way to run uncommitted
+    # changes, is this in place of `image:` above:
+    #
+    #   build:
+    #     context: .
+    #     target: server        # or `pipeline`
 
     # Loopback inside the container would be unreachable from outside it, so
     # the bind is 0.0.0.0 and the *published* port is the one restricted to

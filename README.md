@@ -241,16 +241,21 @@ catalogue, the volumes and the loopback-only port mapping.
 
 Two targets, because the analysis stack is not small:
 
-| target | what it carries | size |
+| image | what it carries | size |
 |---|---|---|
-| `server` | the API, the Rust crawler, `embed` | 266MB |
-| `pipeline` | the above plus uv, ffmpeg and the Python stages | 1.6GB, several more with `extract` |
+| `4gjr3z1t/2khz` | the API, the Rust crawler, `embed` | 266MB |
+| `ghcr.io/nab-os/two-khz-server:pipeline` | the above plus uv, ffmpeg and the Python stages | 1.6GB, several more with `extract` |
 
-`latest` is the slim one. Starting a **Python** stage on it fails with `could
-not start uv`; crawling, syncing, browsing and text steering all work, because
-those are Rust. Reach for `:pipeline` on the machine that actually analyses,
-and keep in mind it is x86_64-only, `essentia-tensorflow` publishes exactly
-one wheel, cp312 manylinux x86_64.
+The slim one is on both Docker Hub and GHCR; the pipeline one is GHCR-only,
+being several GB. Starting a **Python** stage on the slim image fails with
+`could not start uv`; crawling, syncing, browsing and text steering all work,
+because those are Rust. Reach for the pipeline image on the machine that
+actually analyses, and keep in mind it is x86_64-only,
+`essentia-tensorflow` publishes exactly one wheel, cp312 manylinux x86_64.
+
+Both are built by CI from the [`Dockerfile`](Dockerfile)'s two targets, so
+`docker build --target server .` reproduces the published image when you need
+to run uncommitted changes.
 
 The container binds `0.0.0.0` and publishes to `127.0.0.1`, which keeps the
 loopback property the rest of this section describes: the bind has to be
