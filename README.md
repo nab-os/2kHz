@@ -8,6 +8,12 @@ a direction you describe in words.
 Qobuz's API returns metadata only (no BPM, no key, no energy), so the acoustic
 half of every vector is computed from the audio itself.
 
+![The 2kHz desktop app](docs/screenshot.png)
+
+The library on the left, the space in the middle, a UMAP projection of 28,543
+tracks, with the selection's nearest neighbours drawn over it, and on the
+right, what that selection generated.
+
 ## Shape of the system
 
 ```
