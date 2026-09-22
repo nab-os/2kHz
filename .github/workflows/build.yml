@@ -181,23 +181,16 @@ jobs:
 
   # -------------------------------------------------------------- android
   #
-  # Unsigned for now: this job proves the arm64 build still compiles and
-  # bundles, and nothing more. The APK it uploads cannot be installed on a
-  # device, Android refuses an unsigned package, so it is not attached to
-  # releases either (see the `needs:` on the release job).
+  # Signs when the keystore secrets are readable, and builds an unsigned APK
+  # when they are not, rather than being skipped outright. That is what keeps
+  # arm64 covered on pull requests from forks, which structurally cannot read
+  # a secret, there is deliberately no `if:` on this job.
   #
-  # Reading no secrets is what lets this run on pull requests from forks, so
-  # there is deliberately no `if:` here.
-  #
-  # To ship installable builds again: add ANDROID_KEYSTORE_BASE64,
-  # ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD as
-  # repository secrets, restore the zipalign + apksigner step (git log,
-  # "disable the android build for now" has it verbatim), gate this job on
-  # `github.event.pull_request.head.repo.full_name == github.repository`, and
-  # put `android` back in the release job's `needs:` and artifact pattern.
-  # See "Signing the APK" in the README.
+  # A tag is the exception and fails instead: a release must never carry an
+  # APK nobody can install. See "Signing the APK" in the README for the
+  # keystore and the four secrets.
   android:
-    name: android (arm64, unsigned)
+    name: android (arm64)
     runs-on: ubuntu-24.04
 
     steps:
@@ -207,6 +200,42 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      # The `secrets` context cannot be read from a step's `if:`, so whether
+      # the keystore is available becomes an output here and the two collect
+      # steps below branch on that instead.
+      #
+      # Half a keystore is a misconfiguration rather than a fork, and says so:
+      # silently shipping unsigned because one secret was renamed is the
+      # failure worth being loud about.
+      - name: Look for the signing secrets
+        id: signing
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -eu
+          present=0
+          missing=
+          if [ -n "${KEYSTORE:-}" ];   then present=$((present + 1)); else missing="$missing ANDROID_KEYSTORE_BASE64";   fi
+          if [ -n "${STORE_PASS:-}" ]; then present=$((present + 1)); else missing="$missing ANDROID_KEYSTORE_PASSWORD"; fi
+          if [ -n "${ALIAS:-}" ];      then present=$((present + 1)); else missing="$missing ANDROID_KEY_ALIAS";         fi
+
+          if [ "$present" -eq 3 ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "keystore available: this APK will be signed"
+          elif [ "$present" -gt 0 ]; then
+            echo "::error::Signing is half-configured; these secrets are unset:$missing"
+            exit 1
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "::error::A release cannot ship an unsigned APK, and these secrets are unset:$missing"
+            echo "See 'Signing the APK' in the README."
+            exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing keystore readable; building an unsigned APK."
+          fi
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -249,23 +278,54 @@ jobs:
             --cargo-args="--locked" \
             --out-dir "$GITHUB_WORKSPACE/staging"
 
-      # Aligned but not signed. zipalign is the half of the old signing step
-      # that needs no keystore, and doing it here means re-adding signing is
-      # one apksigner call on this output, alignment has to come first,
-      # since a v2+ signature covers the whole archive and realigning
-      # afterwards would invalidate it.
-      #
-      # `-unsigned` is in the filename on purpose: the file is a build
-      # artifact, not something `adb install` will accept.
-      - name: Collect the APK
+      - name: Sign the APK
+        if: steps.signing.outputs.signed == 'true'
         env:
-          OUT: dist/two-khz_${{ steps.v.outputs.version }}_arm64-unsigned.apk
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          OUT: dist/two-khz_${{ steps.v.outputs.version }}_arm64.apk
         run: |
           set -euo pipefail
           mkdir -p dist
 
           # -print -quit rather than `| head -1`: under pipefail, head closing
           # the pipe can hand find a SIGPIPE and fail the step at random.
+          APK=$(find staging -name '*.apk' -print -quit)
+          [ -n "$APK" ] || { echo "::error::dx produced no .apk"; find staging -type f; exit 1; }
+          echo "signing $APK"
+
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          KS=$(mktemp -d)/ks.jks
+          printf '%s' "$KEYSTORE" | base64 -d > "$KS"
+
+          # zipalign must run before apksigner: v2+ signatures cover the whole
+          # archive, so realigning afterwards would invalidate them.
+          "$BT/zipalign" -p -f 4 "$APK" aligned.apk
+          "$BT/apksigner" sign \
+            --ks "$KS" --ks-pass "pass:$STORE_PASS" \
+            --ks-key-alias "$ALIAS" \
+            --key-pass "pass:${KEY_PASS:-$STORE_PASS}" \
+            --out "$OUT" \
+            aligned.apk
+          rm -f "$KS" aligned.apk
+
+          "$BT/apksigner" verify --verbose --print-certs "$OUT"
+          ls -lh dist
+
+      # No keystore, a fork's pull request. Aligned all the same, since
+      # alignment is the half that needs no key, and `-unsigned` is in the
+      # filename because this is a build artifact rather than something
+      # `adb install` will accept.
+      - name: Collect the unsigned APK
+        if: steps.signing.outputs.signed != 'true'
+        env:
+          OUT: dist/two-khz_${{ steps.v.outputs.version }}_arm64-unsigned.apk
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
           APK=$(find staging -name '*.apk' -print -quit)
           [ -n "$APK" ] || { echo "::error::dx produced no .apk"; find staging -type f; exit 1; }
           echo "collecting $APK"
@@ -277,7 +337,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: android-unsigned
+          name: android
           path: dist/*.apk
           if-no-files-found: error
 
@@ -432,21 +492,26 @@ jobs:
   # -------------------------------------------------------------- release
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    # `android` is deliberately absent while its APK is unsigned: an
-    # uninstallable file is not a release asset, so a tag should not wait on
-    # that job either.
-    needs: [linux]
+    needs: [linux, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      # `pattern` is not optional: the docker jobs' build-push-action uploads
-      # a .dockerbuild build record into the same run, and an unfiltered
-      # download both fails on it and would attach it as a release asset.
+      # Two named downloads rather than one unfiltered one: the docker jobs'
+      # build-push-action uploads a .dockerbuild build record into the same
+      # run, and an unfiltered download both fails on it and would attach it
+      # as a release asset.
+      #
+      # The APK here is always signed, the android job fails a tag build
+      # outright when the keystore is missing.
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: ubuntu-*
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts/android
+          name: android
       - run: ls -lhR artifacts
       - uses: softprops/action-gh-release@v3
         with:

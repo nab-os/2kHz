@@ -337,7 +337,7 @@ on demand. A tag additionally opens a GitHub release with everything attached.
 |---|---|
 | Ubuntu 24.04 | `.deb`, `.AppImage`, `.tar.gz`, desktop and server separately |
 | Ubuntu 26.04 | the same, built on 26.04 |
-| Android | one arm64 `.apk`, **unsigned**, so not installable and not released |
+| Android | one signed arm64 `.apk` |
 | Docker | `4gjr3z1t/2khz` and `ghcr.io/…/two-khz-server`, plus `:pipeline` on GHCR alone |
 
 Each Ubuntu release builds on its own runner, and the desktop and server
@@ -349,23 +349,38 @@ The image is built on every push so a broken `Dockerfile` fails next to the
 needs nothing. The `pipeline` image goes to GHCR only, several GB, and no
 pull limit there.
 
-The Android job builds but does not sign, which is why it needs no secrets and
-runs on pull requests from forks like every other job. What it uploads is
-`…_arm64-unsigned.apk`: proof the arm64 build still compiles, not something
-`adb install` will take, Android rejects an unsigned package. It is left out
-of the release job's `needs:` for the same reason. Signing it again is the
-keystore below plus the `apksigner` step described in the comment above the
-job.
+The Android job signs when it can read the keystore secrets and falls back to
+an unsigned `…_arm64-unsigned.apk` when it cannot, rather than being skipped.
+That fallback is there for pull requests from forks, which structurally cannot
+read a secret: arm64 still gets compiled, it just produces a file `adb install`
+will refuse. A **tag fails instead** of falling back, so a release can never
+carry an APK nobody can install.
 
 ### Signing the APK
+
+One keystore, generated once and kept forever:
 
 ```sh
 keytool -genkeypair -v -keystore two-khz.jks -alias two-khz \
   -keyalg RSA -keysize 4096 -validity 10000
-base64 -w0 two-khz.jks        # → ANDROID_KEYSTORE_BASE64
 ```
 
-Then set `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` as repository secrets. **Keep the
-`.jks`**, Android identifies an app by its signing key, so losing it means no
-existing install can ever be upgraded.
+`keytool` asks for a password and for the name/organisation fields that end up
+in the certificate; only the password matters to CI. Then hand the four values
+to GitHub, `gh secret set` reads the value from stdin, so none of them reach
+your shell history:
+
+```sh
+base64 -w0 two-khz.jks | gh secret set ANDROID_KEYSTORE_BASE64
+gh secret set ANDROID_KEYSTORE_PASSWORD     # paste the password, then Ctrl-D
+gh secret set ANDROID_KEY_PASSWORD          # same one, unless you set a separate key password
+printf two-khz | gh secret set ANDROID_KEY_ALIAS
+```
+
+`ANDROID_KEY_PASSWORD` is optional, the workflow falls back to the store
+password when it is unset, which is what a keystore made with the command above
+wants.
+
+**Keep the `.jks`, outside the repo and backed up.** Android identifies an app
+by its signing key: lose it and no existing install can ever be upgraded, only
+uninstalled and replaced.
