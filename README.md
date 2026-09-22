@@ -383,4 +383,8 @@ wants.
 
 **Keep the `.jks`, outside the repo and backed up.** Android identifies an app
 by its signing key: lose it and no existing install can ever be upgraded, only
-uninstalled and replaced.
+uninstalled and replaced. The key this repository's releases are signed with
+lives in `~/.config/two-khz/` and is `CN=2kHz, O=nab-os, C=FR`, SHA-256
+`A0:9C:6C:ED:4E:4B:4B:AC:9F:F9:A4:61:39:87:A8:10:AC:F0:74:C1:0F:75:D9:D0:0A:03:B6:46:49:E3:93:1C`,
+worth recording, since that fingerprint is what a phone compares an upgrade
+against.
