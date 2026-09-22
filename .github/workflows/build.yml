@@ -181,25 +181,21 @@ jobs:
 
   # -------------------------------------------------------------- android
   #
-  # Disabled for the time being. Everything below is known to work, it was
-  # built and signed end to end, it is only switched off.
+  # Signs when the keystore secrets are readable, and builds an unsigned APK
+  # when they are not, rather than being skipped outright. That is what keeps
+  # arm64 covered on pull requests from forks, which structurally cannot read
+  # a secret, there is deliberately no `if:` on this job.
   #
-  # To re-enable, replace `if: false` with the condition below, which skips
-  # only pull requests from forks, since those structurally cannot read the
-  # signing secrets this job requires:
+  # A tag is the exception and fails instead: a release must never carry an
+  # APK nobody can install.
   #
-  #     if: >-
-  #       github.event_name != 'pull_request' ||
-  #       github.event.pull_request.head.repo.full_name == github.repository
-  #
-  # Then add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD and
-  # ANDROID_KEY_ALIAS as repository secrets, and put `android` back in the
-  # release job's `needs:` so the APK is attached to tagged releases.
-  # See "Signing the APK" in the README.
+  # The keystore behind ANDROID_KEYSTORE_BASE64 is generated once with
+  # `keytool -genkeypair -keyalg RSA -keysize 4096`, and is the app's identity
+  # to Android: replacing it means every existing install has to be
+  # uninstalled rather than upgraded.
   android:
     name: android (arm64)
     runs-on: ubuntu-24.04
-    if: false
 
     steps:
       - uses: actions/checkout@v7
@@ -209,23 +205,39 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Fail early if the signing secrets are missing
+      # The `secrets` context cannot be read from a step's `if:`, so whether
+      # the keystore is available becomes an output here and the two collect
+      # steps below branch on that instead.
+      #
+      # Half a keystore is a misconfiguration rather than a fork, and says so:
+      # silently shipping unsigned because one secret was renamed is the
+      # failure worth being loud about.
+      - name: Look for the signing secrets
+        id: signing
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          set -eu
+          present=0
           missing=
-          [ -n "$KEYSTORE" ]   || missing="$missing ANDROID_KEYSTORE_BASE64"
-          [ -n "$STORE_PASS" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
-          [ -n "$ALIAS" ]      || missing="$missing ANDROID_KEY_ALIAS"
-          if [ -n "$missing" ]; then
-            echo "::error::Release signing is required but these secrets are unset:$missing"
-            echo "Create a keystore with:"
-            echo "  keytool -genkeypair -v -keystore two-khz.jks -alias two-khz \\"
-            echo "    -keyalg RSA -keysize 4096 -validity 10000"
-            echo "then add 'base64 -w0 two-khz.jks' as ANDROID_KEYSTORE_BASE64."
+          if [ -n "${KEYSTORE:-}" ];   then present=$((present + 1)); else missing="$missing ANDROID_KEYSTORE_BASE64";   fi
+          if [ -n "${STORE_PASS:-}" ]; then present=$((present + 1)); else missing="$missing ANDROID_KEYSTORE_PASSWORD"; fi
+          if [ -n "${ALIAS:-}" ];      then present=$((present + 1)); else missing="$missing ANDROID_KEY_ALIAS";         fi
+
+          if [ "$present" -eq 3 ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "keystore available: this APK will be signed"
+          elif [ "$present" -gt 0 ]; then
+            echo "::error::Signing is half-configured; these secrets are unset:$missing"
             exit 1
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "::error::A release cannot ship an unsigned APK, and these secrets are unset:$missing"
+            exit 1
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing keystore readable; building an unsigned APK."
           fi
 
       - uses: dtolnay/rust-toolchain@master
@@ -270,6 +282,7 @@ jobs:
             --out-dir "$GITHUB_WORKSPACE/staging"
 
       - name: Sign the APK
+        if: steps.signing.outputs.signed == 'true'
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -280,7 +293,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist
 
-          APK=$(find staging -name '*.apk' | head -1)
+          # -print -quit rather than `| head -1`: under pipefail, head closing
+          # the pipe can hand find a SIGPIPE and fail the step at random.
+          APK=$(find staging -name '*.apk' -print -quit)
           [ -n "$APK" ] || { echo "::error::dx produced no .apk"; find staging -type f; exit 1; }
           echo "signing $APK"
 
@@ -300,6 +315,27 @@ jobs:
           rm -f "$KS" aligned.apk
 
           "$BT/apksigner" verify --verbose --print-certs "$OUT"
+          ls -lh dist
+
+      # No keystore, a fork's pull request. Aligned all the same, since
+      # alignment is the half that needs no key, and `-unsigned` is in the
+      # filename because this is a build artifact rather than something
+      # `adb install` will accept.
+      - name: Collect the unsigned APK
+        if: steps.signing.outputs.signed != 'true'
+        env:
+          OUT: dist/two-khz_${{ steps.v.outputs.version }}_arm64-unsigned.apk
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          APK=$(find staging -name '*.apk' -print -quit)
+          [ -n "$APK" ] || { echo "::error::dx produced no .apk"; find staging -type f; exit 1; }
+          echo "collecting $APK"
+
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -p -f 4 "$APK" "$OUT"
+          "$BT/zipalign" -c -v 4 "$OUT" > /dev/null
           ls -lh dist
 
       - uses: actions/upload-artifact@v7
@@ -459,20 +495,26 @@ jobs:
   # -------------------------------------------------------------- release
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    # `android` is deliberately absent while that job is disabled: a skipped
-    # job counts as unsatisfied, which would skip this one too.
-    needs: [linux]
+    needs: [linux, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      # `pattern` is not optional: the docker jobs' build-push-action uploads
-      # a .dockerbuild build record into the same run, and an unfiltered
-      # download both fails on it and would attach it as a release asset.
+      # Two named downloads rather than one unfiltered one: the docker jobs'
+      # build-push-action uploads a .dockerbuild build record into the same
+      # run, and an unfiltered download both fails on it and would attach it
+      # as a release asset.
+      #
+      # The APK here is always signed, the android job fails a tag build
+      # outright when the keystore is missing.
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: ubuntu-*
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts/android
+          name: android
       - run: ls -lhR artifacts
       - uses: softprops/action-gh-release@v3
         with:
