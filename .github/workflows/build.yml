@@ -181,25 +181,24 @@ jobs:
 
   # -------------------------------------------------------------- android
   #
-  # Disabled for the time being. Everything below is known to work, it was
-  # built and signed end to end, it is only switched off.
+  # Unsigned for now: this job proves the arm64 build still compiles and
+  # bundles, and nothing more. The APK it uploads cannot be installed on a
+  # device, Android refuses an unsigned package, so it is not attached to
+  # releases either (see the `needs:` on the release job).
   #
-  # To re-enable, replace `if: false` with the condition below, which skips
-  # only pull requests from forks, since those structurally cannot read the
-  # signing secrets this job requires:
+  # Reading no secrets is what lets this run on pull requests from forks, so
+  # there is deliberately no `if:` here.
   #
-  #     if: >-
-  #       github.event_name != 'pull_request' ||
-  #       github.event.pull_request.head.repo.full_name == github.repository
-  #
-  # Then add ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD and
-  # ANDROID_KEY_ALIAS as repository secrets, and put `android` back in the
-  # release job's `needs:` so the APK is attached to tagged releases.
+  # To ship installable builds again: add ANDROID_KEYSTORE_BASE64,
+  # ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD as
+  # repository secrets, restore the zipalign + apksigner step (git log,
+  # "disable the android build for now" has it verbatim), gate this job on
+  # `github.event.pull_request.head.repo.full_name == github.repository`, and
+  # put `android` back in the release job's `needs:` and artifact pattern.
   # See "Signing the APK" in the README.
   android:
-    name: android (arm64)
+    name: android (arm64, unsigned)
     runs-on: ubuntu-24.04
-    if: false
 
     steps:
       - uses: actions/checkout@v7
@@ -208,25 +207,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Fail early if the signing secrets are missing
-        env:
-          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          missing=
-          [ -n "$KEYSTORE" ]   || missing="$missing ANDROID_KEYSTORE_BASE64"
-          [ -n "$STORE_PASS" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
-          [ -n "$ALIAS" ]      || missing="$missing ANDROID_KEY_ALIAS"
-          if [ -n "$missing" ]; then
-            echo "::error::Release signing is required but these secrets are unset:$missing"
-            echo "Create a keystore with:"
-            echo "  keytool -genkeypair -v -keystore two-khz.jks -alias two-khz \\"
-            echo "    -keyalg RSA -keysize 4096 -validity 10000"
-            echo "then add 'base64 -w0 two-khz.jks' as ANDROID_KEYSTORE_BASE64."
-            exit 1
-          fi
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -269,42 +249,35 @@ jobs:
             --cargo-args="--locked" \
             --out-dir "$GITHUB_WORKSPACE/staging"
 
-      - name: Sign the APK
+      # Aligned but not signed. zipalign is the half of the old signing step
+      # that needs no keystore, and doing it here means re-adding signing is
+      # one apksigner call on this output, alignment has to come first,
+      # since a v2+ signature covers the whole archive and realigning
+      # afterwards would invalidate it.
+      #
+      # `-unsigned` is in the filename on purpose: the file is a build
+      # artifact, not something `adb install` will accept.
+      - name: Collect the APK
         env:
-          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          OUT: dist/two-khz_${{ steps.v.outputs.version }}_arm64.apk
+          OUT: dist/two-khz_${{ steps.v.outputs.version }}_arm64-unsigned.apk
         run: |
           set -euo pipefail
           mkdir -p dist
 
-          APK=$(find staging -name '*.apk' | head -1)
+          # -print -quit rather than `| head -1`: under pipefail, head closing
+          # the pipe can hand find a SIGPIPE and fail the step at random.
+          APK=$(find staging -name '*.apk' -print -quit)
           [ -n "$APK" ] || { echo "::error::dx produced no .apk"; find staging -type f; exit 1; }
-          echo "signing $APK"
+          echo "collecting $APK"
 
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          KS=$(mktemp -d)/ks.jks
-          printf '%s' "$KEYSTORE" | base64 -d > "$KS"
-
-          # zipalign must run before apksigner: v2+ signatures cover the whole
-          # archive, so realigning afterwards would invalidate them.
-          "$BT/zipalign" -p -f 4 "$APK" aligned.apk
-          "$BT/apksigner" sign \
-            --ks "$KS" --ks-pass "pass:$STORE_PASS" \
-            --ks-key-alias "$ALIAS" \
-            --key-pass "pass:${KEY_PASS:-$STORE_PASS}" \
-            --out "$OUT" \
-            aligned.apk
-          rm -f "$KS" aligned.apk
-
-          "$BT/apksigner" verify --verbose --print-certs "$OUT"
+          "$BT/zipalign" -p -f 4 "$APK" "$OUT"
+          "$BT/zipalign" -c -v 4 "$OUT" > /dev/null
           ls -lh dist
 
       - uses: actions/upload-artifact@v7
         with:
-          name: android
+          name: android-unsigned
           path: dist/*.apk
           if-no-files-found: error
 
@@ -459,8 +432,9 @@ jobs:
   # -------------------------------------------------------------- release
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    # `android` is deliberately absent while that job is disabled: a skipped
-    # job counts as unsatisfied, which would skip this one too.
+    # `android` is deliberately absent while its APK is unsigned: an
+    # uninstallable file is not a release asset, so a tag should not wait on
+    # that job either.
     needs: [linux]
     runs-on: ubuntu-24.04
     permissions:

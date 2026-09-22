@@ -337,7 +337,7 @@ on demand. A tag additionally opens a GitHub release with everything attached.
 |---|---|
 | Ubuntu 24.04 | `.deb`, `.AppImage`, `.tar.gz`, desktop and server separately |
 | Ubuntu 26.04 | the same, built on 26.04 |
-| Android | one signed arm64 `.apk`, **currently disabled** |
+| Android | one arm64 `.apk`, **unsigned**, so not installable and not released |
 | Docker | `4gjr3z1t/2khz` and `ghcr.io/…/two-khz-server`, plus `:pipeline` on GHCR alone |
 
 Each Ubuntu release builds on its own runner, and the desktop and server
@@ -349,9 +349,13 @@ The image is built on every push so a broken `Dockerfile` fails next to the
 needs nothing. The `pipeline` image goes to GHCR only, several GB, and no
 pull limit there.
 
-The Android job is switched off (`if: false`) rather than deleted. Re-enabling
-it is the one-line change described in the comment above the job, plus the
-secrets below.
+The Android job builds but does not sign, which is why it needs no secrets and
+runs on pull requests from forks like every other job. What it uploads is
+`…_arm64-unsigned.apk`: proof the arm64 build still compiles, not something
+`adb install` will take, Android rejects an unsigned package. It is left out
+of the release job's `needs:` for the same reason. Signing it again is the
+keystore below plus the `apksigner` step described in the comment above the
+job.
 
 ### Signing the APK
 
