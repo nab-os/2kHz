@@ -355,36 +355,3 @@ That fallback is there for pull requests from forks, which structurally cannot
 read a secret: arm64 still gets compiled, it just produces a file `adb install`
 will refuse. A **tag fails instead** of falling back, so a release can never
 carry an APK nobody can install.
-
-### Signing the APK
-
-One keystore, generated once and kept forever:
-
-```sh
-keytool -genkeypair -v -keystore two-khz.jks -alias two-khz \
-  -keyalg RSA -keysize 4096 -validity 10000
-```
-
-`keytool` asks for a password and for the name/organisation fields that end up
-in the certificate; only the password matters to CI. Then hand the four values
-to GitHub, `gh secret set` reads the value from stdin, so none of them reach
-your shell history:
-
-```sh
-base64 -w0 two-khz.jks | gh secret set ANDROID_KEYSTORE_BASE64
-gh secret set ANDROID_KEYSTORE_PASSWORD     # paste the password, then Ctrl-D
-gh secret set ANDROID_KEY_PASSWORD          # same one, unless you set a separate key password
-printf two-khz | gh secret set ANDROID_KEY_ALIAS
-```
-
-`ANDROID_KEY_PASSWORD` is optional, the workflow falls back to the store
-password when it is unset, which is what a keystore made with the command above
-wants.
-
-**Keep the `.jks`, outside the repo and backed up.** Android identifies an app
-by its signing key: lose it and no existing install can ever be upgraded, only
-uninstalled and replaced. The key this repository's releases are signed with
-lives in `~/.config/two-khz/` and is `CN=2kHz, O=nab-os, C=FR`, SHA-256
-`A0:9C:6C:ED:4E:4B:4B:AC:9F:F9:A4:61:39:87:A8:10:AC:F0:74:C1:0F:75:D9:D0:0A:03:B6:46:49:E3:93:1C`,
-worth recording, since that fingerprint is what a phone compares an upgrade
-against.

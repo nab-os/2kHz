@@ -187,8 +187,12 @@ jobs:
   # a secret, there is deliberately no `if:` on this job.
   #
   # A tag is the exception and fails instead: a release must never carry an
-  # APK nobody can install. See "Signing the APK" in the README for the
-  # keystore and the four secrets.
+  # APK nobody can install.
+  #
+  # The keystore behind ANDROID_KEYSTORE_BASE64 is generated once with
+  # `keytool -genkeypair -keyalg RSA -keysize 4096`, and is the app's identity
+  # to Android: replacing it means every existing install has to be
+  # uninstalled rather than upgraded.
   android:
     name: android (arm64)
     runs-on: ubuntu-24.04
@@ -230,7 +234,6 @@ jobs:
             exit 1
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             echo "::error::A release cannot ship an unsigned APK, and these secrets are unset:$missing"
-            echo "See 'Signing the APK' in the README."
             exit 1
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
