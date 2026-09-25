@@ -3,10 +3,10 @@
 //! `two_khz.db` is 269MB, almost none of it read at query time. This projects
 //! out what navigation needs: the metadata minus every `qobuz_json` blob,
 //! `layout`, `blocked_artists`, and `features` reduced to the CLAP embedding
-//! plus a one-field `essentia_json` carrying only the BPM.
+//! plus a one-field `descriptors_json` carrying only the BPM.
 //!
-//! That last stub is what keeps `Catalog::load` unchanged, it reads BPM by
-//! pulling `$.bpm`. About 35MB for a 15k corpus, against 269MB.
+//! That last stub is what `Catalog::load` reads BPM from, by pulling `$.bpm`.
+//! About 35MB for a 15k corpus, against 269MB.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -17,10 +17,10 @@ pub fn build(source: &Path, target: &Path) -> Result<u64> {
         anyhow::bail!("{} does not exist", source.display());
     }
 
-    // The source may be a database nothing has crawled into yet. Both halves
-    // create the shared schema on connect for this reason, so do the same
-    // rather than failing with "no such table: artists".
-    two_khz::db::ensure_schema(
+    // The source may be a database nothing has crawled into yet; create the
+    // schema rather than failing with "no such table: artists". This is also
+    // what migrates an older one.
+    crate::db::ensure_schema(
         &Connection::open(source)
             .with_context(|| format!("opening {}", source.display()))?,
     )?;
@@ -41,7 +41,7 @@ pub fn build(source: &Path, target: &Path) -> Result<u64> {
 
     // The shared schema, so the slim copy is still a two_khz database and
     // `Catalog::load` needs no special case for it.
-    two_khz::db::ensure_schema(&conn)?;
+    crate::db::ensure_schema(&conn)?;
 
     conn.execute("ATTACH DATABASE ?1 AS src", [source.to_string_lossy()])
         .with_context(|| format!("attaching {}", source.display()))?;
@@ -67,13 +67,12 @@ pub fn build(source: &Path, target: &Path) -> Result<u64> {
          INSERT INTO blocked_artists (artist_id, name, reason, blocked_at)
              SELECT artist_id, name, reason, blocked_at FROM src.blocked_artists;
 
-         -- effnet_f32 and genre400_f32 are deliberately dropped, and
-         -- essentia_json is reduced to the one field anything reads.
-         INSERT INTO features (track_id, extractor_version, essentia_json, clap_f32, analysed_at)
+         -- descriptors_json is reduced to the one field anything reads.
+         INSERT INTO features (track_id, extractor_version, descriptors_json, clap_f32, analysed_at)
              SELECT track_id,
                     extractor_version,
-                    CASE WHEN essentia_json IS NULL THEN NULL
-                         ELSE json_object('bpm', json_extract(essentia_json, '$.bpm'))
+                    CASE WHEN descriptors_json IS NULL THEN NULL
+                         ELSE json_object('bpm', json_extract(descriptors_json, '$.bpm'))
                     END,
                     clap_f32,
                     analysed_at

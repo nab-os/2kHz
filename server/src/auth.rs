@@ -61,7 +61,7 @@ impl AuthStore {
         let mut raw = [0u8; TOKEN_BYTES];
         rand::rng().fill(&mut raw);
         let token = hex(&raw);
-        let now = two_khz::db::utc_now();
+        let now = crate::db::utc_now();
 
         let conn = self.open()?;
         conn.execute(
@@ -110,7 +110,7 @@ impl AuthStore {
 
         let _ = conn.execute(
             "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
-            rusqlite::params![two_khz::db::utc_now(), device.id],
+            rusqlite::params![crate::db::utc_now(), device.id],
         );
 
         Some(device)

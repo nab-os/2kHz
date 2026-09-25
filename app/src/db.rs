@@ -1,5 +1,5 @@
-//! Track metadata, read straight from the SQLite database both halves share.
-//! The schema lives in `schema.sql` at the repo root, see `ensure_schema`.
+//! Track metadata, read from the slim catalogue the server hands out. The
+//! schema lives in `schema.sql` at the repo root; only the server writes.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -35,37 +35,8 @@ pub struct Catalog {
     pub blocked_artists: HashSet<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct BlockedArtist {
-    pub artist_id: i64,
-    pub name: String,
-    pub reason: Option<String>,
-}
-
-/// The shared schema, embedded at compile time. Both halves create these
-/// tables, so the crawler cannot assume a Python command ran first.
-const SCHEMA: &str = include_str!("../../schema.sql");
-
-/// Create any missing tables and indexes. Cheap and idempotent, every
-/// statement in the schema is `IF NOT EXISTS`.
-pub fn ensure_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(SCHEMA)
-        .context("applying schema.sql")?;
-    Ok(())
-}
-
-/// Open the database for writing, with the schema applied.
-pub fn open_for_write(db_path: &Path) -> Result<Connection> {
-    let conn = Connection::open(db_path)
-        .with_context(|| format!("opening {}", db_path.display()))?;
-    // The pipeline may be reading or writing the same file.
-    conn.busy_timeout(std::time::Duration::from_secs(30))?;
-    ensure_schema(&conn)?;
-    Ok(conn)
-}
-
-/// Artists the user has blocked. Written by either half; see
-/// `pipeline/two_khz/blocklist.py` for what the pipeline does with it.
+/// Artists the user has blocked. The server honours the list everywhere; the
+/// client filters what it has already loaded.
 fn load_blocked(conn: &Connection) -> Result<HashSet<i64>> {
     let mut statement = conn.prepare("SELECT artist_id FROM blocked_artists")?;
     let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
@@ -115,7 +86,7 @@ impl Catalog {
         let mut statement = conn.prepare(
             "SELECT t.id, t.title, t.artist_id, t.album_id, t.seed_distance,
                     ar.name, al.title, al.genre,
-                    f.essentia_json, l.x, l.y
+                    f.descriptors_json, l.x, l.y
              FROM tracks t
              LEFT JOIN artists  ar ON ar.id = t.artist_id
              LEFT JOIN albums   al ON al.id = t.album_id
@@ -125,9 +96,9 @@ impl Catalog {
 
         let mut by_id: HashMap<i64, TrackMeta> = HashMap::new();
         let rows = statement.query_map([], |row| {
-            let essentia: Option<String> = row.get(8)?;
+            let descriptors: Option<String> = row.get(8)?;
             // BPM lives inside the descriptor blob; pull just that one field.
-            let bpm = essentia.as_deref().and_then(|json| {
+            let bpm = descriptors.as_deref().and_then(|json| {
                 serde_json::from_str::<serde_json::Value>(json)
                     .ok()
                     .and_then(|v| v.get("bpm").and_then(|b| b.as_f64()))
@@ -214,111 +185,8 @@ impl Catalog {
     }
 }
 
-// ------------------------------------------------------------ writing back
-//
-// Mostly this module reads. It writes two things: the block list below, and,
-// via `crate::crawl`, catalogue rows and frontier entries.
-
-/// Hide an artist everywhere. Mirrors the Python side, including dropping them
-/// from the frontier so an in-flight crawl stops expanding them.
-pub fn block_artist(
-    db_path: &Path,
-    artist_id: i64,
-    name: &str,
-    reason: Option<&str>,
-) -> Result<()> {
-    let conn = Connection::open(db_path)
-        .with_context(|| format!("opening {} for writing", db_path.display()))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-
-    conn.execute(
-        "INSERT INTO blocked_artists (artist_id, name, reason, blocked_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(artist_id) DO UPDATE SET
-             name   = COALESCE(excluded.name, blocked_artists.name),
-             reason = COALESCE(excluded.reason, blocked_artists.reason)",
-        rusqlite::params![artist_id, name, reason, utc_now()],
-    )
-    .with_context(|| format!("blocking artist {artist_id}"))?;
-
-    conn.execute(
-        "DELETE FROM frontier WHERE kind = 'artist' AND ref_id = ?1",
-        rusqlite::params![artist_id.to_string()],
-    )?;
-
-    Ok(())
-}
-
-pub fn unblock_artist(db_path: &Path, artist_id: i64) -> Result<()> {
-    let conn = Connection::open(db_path)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    conn.execute(
-        "DELETE FROM blocked_artists WHERE artist_id = ?1",
-        rusqlite::params![artist_id],
-    )?;
-    Ok(())
-}
-
-pub fn blocked_artists(db_path: &Path) -> Result<Vec<BlockedArtist>> {
-    let conn = Connection::open(db_path)?;
-    let mut statement = conn.prepare(
-        "SELECT artist_id, name, reason FROM blocked_artists ORDER BY name COLLATE NOCASE",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok(BlockedArtist {
-            artist_id: row.get(0)?,
-            name: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            reason: row.get(2)?,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
 /// Just the ids, for refreshing a loaded catalog after a block changes.
 pub fn blocked_artist_ids(db_path: &Path) -> Result<HashSet<i64>> {
     let conn = Connection::open(db_path)?;
     load_blocked(&conn)
-}
-
-pub fn utc_now() -> String {
-    // Same shape as the Python side writes: UTC, seconds precision.
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = seconds / 86_400;
-    let (year, month, day) = civil_from_days(days as i64);
-    let rest = seconds % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}+00:00",
-        rest / 3600,
-        (rest % 3600) / 60,
-        rest % 60
-    )
-}
-
-/// Howard Hinnant's days-from-civil, inverted. Cheaper than pulling in chrono
-/// for the one timestamp this crate writes.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// How much work the crawler has waiting, for the status line.
-pub fn pending_count(db_path: &Path) -> Result<i64> {
-    let conn = Connection::open(db_path)?;
-    let count = conn.query_row(
-        "SELECT COUNT(*) FROM frontier WHERE state = 'pending'",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(count)
 }

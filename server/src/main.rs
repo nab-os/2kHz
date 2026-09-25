@@ -1,9 +1,11 @@
-//! `two-khz-server`: the half that owns the credentials and the machine.
+//! `two-khz-server`: everything but the screen.
 //!
-//! Holds the Qobuz token, the shared rate limit, the database, the CLAP text
-//! tower and the pipeline stages. Clients get a slim catalogue and the vectors.
+//! Holds the Qobuz token, the shared rate limit, the database, the CLAP
+//! models and the whole pipeline, crawl, analyse, build-space, layout. Clients
+//! get a slim catalogue and the vectors, and ask for the rest over HTTP.
 //!
 //! ```sh
+//! two-khz-server login                                  # Qobuz, once
 //! two-khz-server pair --name desktop --scope pipeline   # first device
 //! two-khz-server serve                                  # 127.0.0.1:7700
 //! ```
@@ -13,25 +15,35 @@
 
 mod auth;
 mod catalog;
+mod cli;
+mod crawl;
+mod db;
+mod hub;
+mod login;
+mod pipeline;
+mod qobuz;
 mod routes;
+mod stages;
+mod text;
 
 use anyhow::{Context, Result};
 use auth::AuthStore;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use two_khz::api::Scope;
-use two_khz::backend::Local;
+use hub::Hub;
+use pipeline::Paths;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use two_khz::api::Scope;
 
 const DEFAULT_BIND: &str = "127.0.0.1:7700";
 
 #[derive(Clone)]
 pub struct AppState {
-    /// The same type the desktop app uses locally. There is deliberately no
-    /// second implementation of the crawl loop or the stage runner here.
-    pub local: Arc<Local>,
+    /// Qobuz, the block list, the crawl and the stages. The routes only
+    /// translate to and from it.
+    pub hub: Arc<Hub>,
     pub auth: Arc<AuthStore>,
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
@@ -97,16 +109,24 @@ impl IntoResponse for Failure {
 fn usage() -> ! {
     eprintln!(
         "\
-two-khz-server: the server half of 2kHz
+two-khz-server: everything in 2kHz but the screen
 
+serving
   serve [--bind ADDR]            run the API (default {DEFAULT_BIND})
   pair --name NAME [--scope S]   mint a device token; S is play|pipeline
   devices                        list paired devices
   revoke ID                      revoke one device
   build-catalog                  rebuild the slim catalogue clients sync
 
+{}
+
 Devices are stored in the same database as the catalogue. A token is shown
-once, at pairing, and only its hash is kept."
+once, at pairing, and only its hash is kept.
+
+TWO_KHZ_DATA_DIR, TWO_KHZ_MODEL_DIR and TWO_KHZ_CACHE_DIR move the corpus,
+the model weights and the excerpt cache; TWO_KHZ_ENV_DIR, the .env holding
+the Qobuz credentials. The environment itself wins over any .env.",
+        cli::USAGE
     );
     std::process::exit(2);
 }
@@ -122,14 +142,21 @@ fn main() -> Result<()> {
         usage()
     };
 
-    let data_dir = two_khz::default_data_dir();
-    let db_path = two_khz::default_db_path();
+    let paths = Paths::from_env();
+    if let Some(outcome) = cli::run(command, &args[1..], &paths) {
+        return outcome;
+    }
+
+    let data_dir = paths.data_dir.clone();
+    let db_path = paths.db_path.clone();
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("creating {}", data_dir.display()))?;
     let store = AuthStore::new(&db_path)?;
 
     match command {
         "serve" => {
             let bind = flag(&args, "--bind").unwrap_or_else(|| DEFAULT_BIND.to_string());
-            serve(bind, data_dir, db_path, store)
+            serve(bind, paths, store)
         }
         "pair" => {
             let Some(name) = flag(&args, "--name") else {
@@ -196,7 +223,8 @@ fn main() -> Result<()> {
     }
 }
 
-fn serve(bind: String, data_dir: PathBuf, db_path: PathBuf, store: AuthStore) -> Result<()> {
+fn serve(bind: String, paths: Paths, store: AuthStore) -> Result<()> {
+    let (data_dir, db_path) = (paths.data_dir.clone(), paths.db_path.clone());
     let address: SocketAddr = bind
         .parse()
         .with_context(|| format!("“{bind}” is not an address:port"))?;
@@ -217,17 +245,10 @@ fn serve(bind: String, data_dir: PathBuf, db_path: PathBuf, store: AuthStore) ->
         );
     }
 
-    // A stage must not outlive the server.
-    two_khz::stages::install_exit_guard();
-
-    let local = Arc::new(Local::new(
-        two_khz::qobuz::repo_root(),
-        db_path.clone(),
-        two_khz::default_model_dir(),
-    ));
+    let hub = Arc::new(Hub::new(paths));
 
     let state = AppState {
-        local: local.clone(),
+        hub: hub.clone(),
         auth: Arc::new(store),
         data_dir: data_dir.clone(),
         db_path: db_path.clone(),
@@ -238,7 +259,7 @@ fn serve(bind: String, data_dir: PathBuf, db_path: PathBuf, store: AuthStore) ->
         // The slim catalogue has to follow the space: a client syncing new
         // vectors against an old catalogue draws the right points with the
         // wrong labels.
-        tokio::spawn(watch_generation(local, db_path, data_dir));
+        tokio::spawn(watch_generation(hub, db_path, data_dir));
 
         let listener = tokio::net::TcpListener::bind(address).await?;
         println!("two-khz-server listening on http://{address}");
@@ -253,24 +274,22 @@ fn serve(bind: String, data_dir: PathBuf, db_path: PathBuf, store: AuthStore) ->
 }
 
 /// Rebuild `catalog.db` whenever a stage has rewritten the space.
-async fn watch_generation(local: Arc<Local>, db_path: PathBuf, data_dir: PathBuf) {
+async fn watch_generation(hub: Arc<Hub>, db_path: PathBuf, data_dir: PathBuf) {
     let mut seen = u64::MAX;
 
     loop {
-        if let Ok(status) = local.pipeline_status().await {
+        if let Ok(status) = hub.pipeline_status().await {
             if status.generation != seen {
-                // Skip the rebuild on the first pass if one already exists;
-                // `build-catalog` covers the cold start.
-                if seen != u64::MAX || !data_dir.join("catalog.db").exists() {
-                    let target = data_dir.join("catalog.db");
-                    match catalog::build(&db_path, &target) {
-                        Ok(bytes) => println!(
-                            "rebuilt {} ({:.1} MB)",
-                            target.display(),
-                            bytes as f64 / 1_048_576.0
-                        ),
-                        Err(err) => eprintln!("could not rebuild the slim catalogue: {err:#}"),
-                    }
+                // Including the first pass: a catalogue left by an older
+                // server may not match the schema clients now read.
+                let target = data_dir.join("catalog.db");
+                match catalog::build(&db_path, &target) {
+                    Ok(bytes) => println!(
+                        "rebuilt {} ({:.1} MB)",
+                        target.display(),
+                        bytes as f64 / 1_048_576.0
+                    ),
+                    Err(err) => eprintln!("could not rebuild the slim catalogue: {err:#}"),
                 }
                 seen = status.generation;
             }
@@ -281,5 +300,5 @@ async fn watch_generation(local: Arc<Local>, db_path: PathBuf, data_dir: PathBuf
 
 async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
-    println!("\nshutting down; any running stage is being signalled");
+    println!("\nshutting down; a running stage stops with the process");
 }

@@ -1,8 +1,5 @@
 //! Catalogue crawler.
 //!
-//! A port of the Python crawler, kept close to it: same frontier table, same
-//! upserts, same ordering. Either can resume what the other started.
-//!
 //! Seeds from favourites at seed_distance 0, then expands through
 //! `artist/getSimilarArtists`. The frontier lives in SQLite, so the crawl is
 //! interruptible.
@@ -13,8 +10,6 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::HashSet;
 
-/// How far a crawl will wander from a favourite before giving up on a branch.
-pub const DEFAULT_MAX_DISTANCE: i64 = 2;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Stats {
