@@ -106,6 +106,10 @@ pub fn parse_bundle(source: &str) -> Result<Bundle> {
 }
 
 /// Standard alphabet, padding optional; `None` on anything else.
+///
+/// Decoding stops at the first `=`, as Python's decoder does. That is load-
+/// bearing: the player's blobs are the secret, its padding, then 44 more
+/// characters of decoy, and decoding straight through yields 64 bytes of junk.
 fn base64_decode(text: &str) -> Option<Vec<u8>> {
     let value = |c: u8| -> Option<u32> {
         Some(match c {
@@ -117,7 +121,7 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
             _ => return None,
         } as u32)
     };
-    let bytes: Vec<u8> = text.bytes().filter(|&c| c != b'=').collect();
+    let bytes: Vec<u8> = text.bytes().take_while(|&c| c != b'=').collect();
     let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
     for chunk in bytes.chunks(4) {
         let mut acc = 0u32;
@@ -312,19 +316,16 @@ mod tests {
 
     #[test]
     fn pulls_credentials_out_of_a_bundle() {
-        let secret = "0123456789abcdef0123456789abcdef";
-        let encoded = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
-        let (seed, rest) = encoded.split_at(10);
-        let (info, extras) = rest.split_at(20);
-        let source = format!(
-            r#"x production:{{api:{{appId:"123456789",appSecret:""}} y
-               .initialSeed("{seed}",window.utimezone.berlin) z
-               name:"Europe/Berlin",info:"{info}",extras:"{extras}" w
-               privateKey:"abc123=""#
-        );
-        let bundle = parse_bundle(&source).unwrap();
-        assert_eq!(bundle.app_id, "123456789");
-        assert_eq!(bundle.secrets, vec![secret.to_string()]);
-        assert_eq!(bundle.private_key.as_deref(), Some("abc123="));
+        // One secret as the web player carried it in September 2026: the
+        // seed, then info and extras, with the padding and a decoy tail
+        // landing mid-blob.
+        let source = r#"x production:{api:{appId:"798273057",appSecret:""} y
+            .initialSeed("ZjY5YTc3MzQ2ODZjYjk0Mjc2MjkzNz",window.utimezone.london) z
+            name:"Europe/London",info:"hhNGI3YWMzODE=MTlkMTI1OWM1Nj",extras:"VkNDNlNDg2OWU2MjU1YWUxYTdmZTU=" w
+            privateKey:"6lz8C03UDIC7""#;
+        let bundle = parse_bundle(source).unwrap();
+        assert_eq!(bundle.app_id, "798273057");
+        assert_eq!(bundle.secrets, vec!["f69a7734686cb9427629378a4b7ac381".to_string()]);
+        assert_eq!(bundle.private_key.as_deref(), Some("6lz8C03UDIC7"));
     }
 }
