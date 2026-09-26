@@ -90,16 +90,16 @@ normalisation section below.
 
 `labels.rs::MOODS` defines eight axes as phrase pairs:
 
-```
-energy        "energetic, intense music"             vs "calm, gentle music"
-valence       "happy, uplifting music"               vs "sad, melancholic music"
-aggression    "aggressive, angry music"              vs "tender, peaceful music"
-danceability  "danceable music with a strong groove" vs "music with no beat or groove"
-darkness      "dark, ominous music"                  vs "bright, sunny music"
-acoustic      "acoustic instruments played by hand"  vs "electronic music made with synthesizers"
-vocals        "music with a singer and lyrics"       vs "instrumental music with no vocals"
-complexity    "complex, experimental music"          vs "simple, repetitive music"
-```
+| axis | one end | the other end |
+|---|---|---|
+| energy | "energetic, intense music" | "calm, gentle music" |
+| valence | "happy, uplifting music" | "sad, melancholic music" |
+| aggression | "aggressive, angry music" | "tender, peaceful music" |
+| danceability | "danceable music with a strong groove" | "music with no beat or groove" |
+| darkness | "dark, ominous music" | "bright, sunny music" |
+| acoustic | "acoustic instruments played by hand" | "electronic music made with synthesizers" |
+| vocals | "music with a singer and lyrics" | "instrumental music with no vocals" |
+| complexity | "complex, experimental music" | "simple, repetitive music" |
 
 `label_vectors` embeds both ends and stores the **difference** of the two
 text vectors as the axis direction. A track's score is `dot(clap, a - b)` =
